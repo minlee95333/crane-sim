@@ -1,0 +1,19 @@
+{
+  "name": "crane-sim",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "3D lifting (yangjung) simulator - core/sim/render layered, RL-ready",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node scripts/run-tests.js"
+  },
+  "dependencies": {
+    "three": "^0.170.0"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0"
+  }
+}
