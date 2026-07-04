@@ -1,10 +1,12 @@
 // 사람 입력 → CraneCommand 변환.
 // 나중에 RL 에이전트가 이 자리(getCommand 반환값)를 대체한다.
 //
-// 조작:
-//   ← / →  선회 (반시계/시계)
-//   ↑ / ↓  기복 (붐 올림=반경 축소 / 붐 내림=반경 확대)
-//   W / S  권상 / 권하
+// 게임형 배치 (탱크식: WASD로 차체 주행 + 화살표로 팔 조준):
+//   [주행]  W/S  전진·후진 (트랙 헤딩 방향)   A/D  좌·우회전 (조향)
+//   [선회]  ← / →   상부체 선회 (반시계/시계)
+//   [기복]  ↑ / ↓   붐 올림(반경↓) / 내림(반경↑)
+//   [권상]  Q / E   후크 올림 / 내림
+//   [픽업]  Space   줄걸이/해제
 
 export class KeyboardControl {
   constructor(target = window) {
@@ -31,10 +33,14 @@ export class KeyboardControl {
   getCommand() {
     const k = this.keys;
     return {
+      // 팔 조준: 화살표 + Q/E
       slew: (k.has('ArrowRight') ? 1 : 0) + (k.has('ArrowLeft') ? -1 : 0),
       // ↑ = 붐 올림 = 반경 축소 = luff -1
       luff: (k.has('ArrowDown') ? 1 : 0) + (k.has('ArrowUp') ? -1 : 0),
-      hoist: (k.has('KeyW') ? 1 : 0) + (k.has('KeyS') ? -1 : 0),
+      hoist: (k.has('KeyQ') ? 1 : 0) + (k.has('KeyE') ? -1 : 0),
+      // 차체 주행: WASD (W 전진 / S 후진, A 좌회전 / D 우회전)
+      drive: (k.has('KeyW') ? 1 : 0) + (k.has('KeyS') ? -1 : 0),
+      steer: (k.has('KeyD') ? 1 : 0) + (k.has('KeyA') ? -1 : 0),
     };
   }
 }

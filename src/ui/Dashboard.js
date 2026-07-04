@@ -3,7 +3,7 @@ export class Dashboard {
     this.root = root;
     this.scenarios = scenarios;
     this.handlers = handlers;
-    this.command = { slew: 0, luff: 0, hoist: 0 };
+    this.command = { slew: 0, luff: 0, hoist: 0, drive: 0, steer: 0 };
     this.render();
     this.bind();
   }
@@ -39,16 +39,27 @@ export class Dashboard {
       </section>
 
       <section class="dash-section">
-        <span class="dash-label">수동 제어 · 누르고 있는 동안 작동</span>
+        <span class="dash-label">수동 제어 · 버튼을 누르고 있거나 키를 사용</span>
+
+        <span class="dash-label" style="margin-top:2px">🚜 주행 (이동식) · <b>W A S D</b></span>
         <div class="control-grid">
-          <button class="dash-btn" data-control="slew" data-value="-1">↶ 좌선회</button>
-          <button class="dash-btn" data-control="slew" data-value="1">↷ 우선회</button>
-          <button class="dash-btn" data-control="luff" data-value="-1">붐 올림 / 안쪽</button>
-          <button class="dash-btn" data-control="luff" data-value="1">붐 내림 / 바깥</button>
-          <button class="dash-btn" data-control="hoist" data-value="1">↑ 권상</button>
-          <button class="dash-btn" data-control="hoist" data-value="-1">↓ 권하</button>
+          <button class="dash-btn" data-control="drive" data-value="1">W · 전진 ▲</button>
+          <button class="dash-btn" data-control="drive" data-value="-1">S · 후진 ▼</button>
+          <button class="dash-btn" data-control="steer" data-value="-1">A · 좌회전 ◀</button>
+          <button class="dash-btn" data-control="steer" data-value="1">D · 우회전 ▶</button>
         </div>
-        <button class="dash-btn primary" data-action="attach" style="width:100%;margin-top:8px">픽업 / 해제</button>
+
+        <span class="dash-label" style="margin-top:8px">🏗 팔 조작 · <b>← → ↑ ↓ Q E</b></span>
+        <div class="control-grid">
+          <button class="dash-btn" data-control="slew" data-value="-1">← 좌선회 ↶</button>
+          <button class="dash-btn" data-control="slew" data-value="1">→ 우선회 ↷</button>
+          <button class="dash-btn" data-control="luff" data-value="-1">↑ 붐 올림 (반경↓)</button>
+          <button class="dash-btn" data-control="luff" data-value="1">↓ 붐 내림 (반경↑)</button>
+          <button class="dash-btn" data-control="hoist" data-value="1">Q · 권상 ↑</button>
+          <button class="dash-btn" data-control="hoist" data-value="-1">E · 권하 ↓</button>
+        </div>
+
+        <button class="dash-btn primary" data-action="attach" style="width:100%;margin-top:8px">Space · 픽업 / 해제</button>
       </section>
 
       <section class="dash-section">
@@ -124,7 +135,7 @@ export class Dashboard {
     });
 
     const release = () => {
-      this.command = { slew: 0, luff: 0, hoist: 0 };
+      this.command = { slew: 0, luff: 0, hoist: 0, drive: 0, steer: 0 };
       this.root.querySelectorAll('[data-control]').forEach((b) => b.classList.remove('is-active'));
     };
     this.root.querySelectorAll('[data-control]').forEach((button) => {

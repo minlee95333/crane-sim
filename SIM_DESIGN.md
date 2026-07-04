@@ -214,6 +214,7 @@
 | **P7.5** | **실행 통합 + 차등 시연** — 부품을 실행 계층에 배선 | PlanRunner 재배치 상태기계(park→teardown→travel→setup, basePos 실이동·연료비), moveTo 퇴피 액션, 3D 간섭 양보를 능동 퇴피로(붐 이격=luff·away선회 / 테일=거리기울기 선회, holdClearance 방어선), macroToPlan 다리, S9 야적장 철골 시나리오, examples/differential.js (규칙 vs 물리 순위 역전 입증) | ✅ 2026-07-03 |
 | **P7.6** | **시뮬 완전성** — RL 전 실행 계층 보강 | PlanEnvironment 재배치 후보(셋업 탐색 동반, S8/S9 완주), 작업원 hard 간섭 순차화, 유휴 크레인 자동 퇴피 이동(clash 근본 차단), 주행 가감속 램프·방향성 차단·경로 재계획·비상 안착, **트럭 코어 승격**(Truck 엔티티·데이터 주도 스펙·충돌체·동반 이동·단일 출차) | ✅ 2026-07-04 |
 | **P7.7** | **픽앤캐리 + 주행 중 전도** (T2-⑧, T3 안정성) | Stability에 감격 정격(pickCarryFactor)·주행 전도(동적 하중전이 항), AutoPilot 캐리 페이즈(picku→lift-carry→carry 베이스 주행→goto-target), checkCarryFeasible(픽업/안착 정적 + 캐리 감격/전도), PlanRunner carryTo 액션, PlanEnvironment 캐리 후보(재배치 불가 시 폴백, 픽업 복귀 재배치 동반), **S10 픽앤캐리 통로**(픽업·목표 78m 이격 — 캐리로만 완주) | ✅ 2026-07-04 |
+| **P7.8** | **실시간 수동 주행** (미시 조작 트랙) | CraneCommand에 drive/steer, MobileCrane 언더캐리지 헤딩(driveYaw)·주행 램프(상부체 선회와 독립), World base 충돌 차단(장애물·경계·트럭·타 크레인 → revert), **게임형 키 배치**(WASD 주행 / 화살표 선회·기복 / Q·E 권상 — 탱크식 차체+포탑), 대시보드 버튼·키 힌트, 뷰 하부체 회전, HUD 주행 표시. 하중 매단 채 주행 = 수동 픽앤캐리 | ✅ 2026-07-04 |
 | **P8** | (최종) 스케줄링 RL 학습 | makespan/비용 최적화, V2 MAPPO·IRL 재사용 검토 | |
 
 *P1~P2가 최우선: 이 둘이 되면 "여러 양중물의 계획을 넣으면 현실적 타임라인이 나오는" 시뮬레이터가 완성되고, 이후 현실 요소(P3~P6)는 그 정확도를 올리는 작업이 된다. 베이스라인 계획(greedy/최근접)과의 비교도 P2에서 바로 가능.*

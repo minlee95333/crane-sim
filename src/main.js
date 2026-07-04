@@ -257,10 +257,13 @@ function loop(now) {
     }
     const keyCommand = keyboard.getCommand();
     const panelCommand = dashboard.getCommand();
+    const clamp1 = (v) => Math.max(-1, Math.min(1, v));
     command = {
-      slew: Math.max(-1, Math.min(1, keyCommand.slew + panelCommand.slew)),
-      luff: Math.max(-1, Math.min(1, keyCommand.luff + panelCommand.luff)),
-      hoist: Math.max(-1, Math.min(1, keyCommand.hoist + panelCommand.hoist)),
+      slew: clamp1(keyCommand.slew + panelCommand.slew),
+      luff: clamp1(keyCommand.luff + panelCommand.luff),
+      hoist: clamp1(keyCommand.hoist + panelCommand.hoist),
+      drive: clamp1((keyCommand.drive ?? 0) + (panelCommand.drive ?? 0)),
+      steer: clamp1((keyCommand.steer ?? 0) + (panelCommand.steer ?? 0)),
     };
     const commands = Array.from({ length: nCranes }, (_, i) =>
       i === activeCrane ? command : { slew: 0, luff: 0, hoist: 0 },
@@ -356,7 +359,10 @@ function drawHUD(state, command) {
     `${entry.desc}`,
     ``,
     craneLabel,
-    `입력     : slew=${command.slew} luff=${command.luff} hoist=${command.hoist}`,
+    `입력     : slew=${command.slew} luff=${command.luff} hoist=${command.hoist}${c.type !== 'tower' ? ` drive=${command.drive ?? 0} steer=${command.steer ?? 0}` : ''}`,
+    c.type !== 'tower'
+      ? `주행     : ${(c.extra.driveVel ?? 0).toFixed(2)} m/s · 헤딩 ${rad2deg(c.extra.driveYaw ?? 0).toFixed(0)}° · 위치 (${c.basePos[0].toFixed(1)}, ${c.basePos[2].toFixed(1)})`
+      : `위치     : 고정식 (마스트)`,
     `선회각   : ${rad2deg(c.slewAngle).toFixed(1)}°`,
     `${radiusLabel}: ${c.radius.toFixed(2)} m`,
     `후크높이 : ${c.hookHeight.toFixed(2)} m${swayLine}${windLine}`,
@@ -369,7 +375,7 @@ function drawHUD(state, command) {
     `이벤트   : ${state.lastEvent ?? '-'}`,
     `${recLine}`,
     ``,
-    `←/→ 선회  ↑/↓ 기복·트롤리  W/S 권상·권하  Space 픽업/해제`,
+    `[주행] W/S 전·후진  A/D 좌·우회전    [팔] ←/→ 선회  ↑/↓ 기복  Q/E 권상·권하  Space 픽업`,
     `N 다음 시나리오  O 리셋  Tab 크레인 전환  1~4 배속  R 기록  P 리플레이`,
     `마우스: 회전 | 휠: 줌 | 우클릭: 이동`,
   ].join('\n');
