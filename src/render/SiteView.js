@@ -64,21 +64,9 @@ export class SiteView {
       this.targets.set(l.id, { fill, ring });
     }
 
-    // --- 장애물: 회색 박스 + 윤곽선 ---
+    // --- 장애물: kind 데이터 주도 외형 (office/structure/미지정=회색 박스) ---
     for (const ob of state.obstacles ?? []) {
-      const [w, h, d] = ob.size;
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), MAT.obstacle);
-      mesh.position.set(ob.pos[0], h / 2, ob.pos[2]);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      this.root.add(mesh);
-
-      const edges = new THREE.LineSegments(
-        new THREE.EdgesGeometry(mesh.geometry),
-        MAT.obstacleEdge,
-      );
-      edges.position.copy(mesh.position);
-      this.root.add(edges);
+      this.root.add(this.#buildObstacle(ob, scenario));
     }
 
     // --- 인양 금지구역: 바닥 붉은 영역 + 테두리 ---
@@ -135,6 +123,65 @@ export class SiteView {
         wheel.rotation.x = (m.wheelDistance / TRUCK_WHEEL_RADIUS) * delivery.travelDirection;
       }
     }
+  }
+
+  /**
+   * 장애물 외형 — 코어 충돌 AABB(size)는 그대로, 시각만 kind로 분화.
+   * kind는 시나리오 obstacles 데이터에서 온다 (world 상태에는 없음 → 시나리오에서 조회).
+   */
+  #buildObstacle(ob, scenario) {
+    const kind = (scenario.obstacles ?? []).find((o) => o.id === ob.id)?.kind ?? null;
+    const [w, h, d] = ob.size;
+    const g = new THREE.Group();
+    g.position.set(ob.pos[0], 0, ob.pos[2]);
+
+    if (kind === 'office') {
+      // 현장 사무실: 패널 컨테이너 적층 — 밝은 벽 + 창 밴드 + 지붕 립
+      const wall = new THREE.MeshStandardMaterial({ color: 0xd8d4ca, roughness: 0.7 });
+      const body = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), wall);
+      body.position.y = h / 2;
+      body.castShadow = true;
+      body.receiveShadow = true;
+      g.add(body);
+      const band = new THREE.MeshStandardMaterial({
+        color: 0x27455e,
+        roughness: 0.2,
+        metalness: 0.4,
+        emissive: 0x0e1d2a,
+      });
+      const floors = Math.max(1, Math.round(h / 3));
+      for (let f = 0; f < floors; f++) {
+        const win = new THREE.Mesh(new THREE.BoxGeometry(w * 0.94, 0.8, d + 0.06), band);
+        win.position.y = (f + 0.62) * (h / floors);
+        g.add(win);
+      }
+      const lip = new THREE.Mesh(
+        new THREE.BoxGeometry(w + 0.3, 0.18, d + 0.3),
+        new THREE.MeshStandardMaterial({ color: 0x6f7680, roughness: 0.8 }),
+      );
+      lip.position.y = h + 0.09;
+      g.add(lip);
+      return g;
+    }
+
+    // structure(기시공 구조물)·미지정: 콘크리트 박스 + 윤곽 + 상부 슬래브 톤
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), MAT.obstacle);
+    mesh.position.y = h / 2;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    g.add(mesh);
+    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry), MAT.obstacleEdge);
+    edges.position.y = h / 2;
+    g.add(edges);
+    if (kind === 'structure') {
+      const cap = new THREE.Mesh(
+        new THREE.BoxGeometry(w + 0.12, 0.15, d + 0.12),
+        new THREE.MeshStandardMaterial({ color: 0x5d636b, roughness: 0.9 }),
+      );
+      cap.position.y = h + 0.075;
+      g.add(cap);
+    }
+    return g;
   }
 
   #addLogisticsSite(scenario) {

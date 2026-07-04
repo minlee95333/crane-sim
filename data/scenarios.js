@@ -28,7 +28,7 @@ const S2 = {
   ],
   obstacles: [
     // 픽업(0°)→목표(60°) 아크 중간(30°)의 고층 구조물 — 낮게 지나가면 충돌
-    { id: 'rack-1', pos: [onArc(21.2, 30)[0], 0, onArc(21.2, 30)[1]], size: [5, 10, 5] },
+    { id: 'rack-1', kind: 'structure', pos: [onArc(21.2, 30)[0], 0, onArc(21.2, 30)[1]], size: [5, 10, 5] },
   ],
   noFlyZones: [],
 };
@@ -76,7 +76,7 @@ const S4 = {
       target: onArc(21.2, 70),
     },
   ],
-  obstacles: [{ id: 'shed-1', pos: [onArc(26, -15)[0], 0, onArc(26, -15)[1]], size: [4, 5, 4] }],
+  obstacles: [{ id: 'shed-1', kind: 'structure', pos: [onArc(26, -15)[0], 0, onArc(26, -15)[1]], size: [4, 5, 4] }],
   noFlyZones: [],
 };
 
@@ -103,7 +103,7 @@ const S5 = {
     },
   ],
   obstacles: [
-    { id: 'core-wall', pos: [onArc(18, 75)[0], 0, onArc(18, 75)[1]], size: [6, 14, 3] },
+    { id: 'core-wall', kind: 'structure', pos: [onArc(18, 75)[0], 0, onArc(18, 75)[1]], size: [6, 14, 3] },
   ],
   noFlyZones: [{ id: 'gate-zone', min: [-30, -8], max: [-18, 8] }],
 };
@@ -134,7 +134,7 @@ const S6 = {
       target: [28 + onArc(22, 120)[0], onArc(22, 120)[1]],
     },
   ],
-  obstacles: [{ id: 'plant-1', pos: [0, 0, 14], size: [8, 12, 6] }],
+  obstacles: [{ id: 'plant-1', kind: 'structure', pos: [0, 0, 14], size: [8, 12, 6] }],
   noFlyZones: [{ id: 'road-zone', min: [-8, -30], max: [8, -14] }],
 };
 
@@ -198,7 +198,7 @@ const S8 = {
     planLoad('DUCT-2', 3, [10, 42], [5, 45], ['CORE-2']),
   ],
   obstacles: [
-    { id: 'site-office', pos: [0, 0, -18], size: [16, 8, 10] },
+    { id: 'site-office', kind: 'office', pos: [0, 0, -18], size: [16, 8, 10] },
   ],
   noFlyZones: [
     { id: 'central-road', min: [-8, -38], max: [8, -5] },
@@ -285,7 +285,7 @@ const S9 = {
     exitDuration: 30,
     loads: ['C-11', 'C-21', 'GX-1', 'GZ-1', 'D-1', 'C-12', 'C-22', 'GX-2', 'GZ-2', 'D-2', 'M-1'],
   }],
-  obstacles: [{ id: 'site-office', pos: [0, 0, -24], size: [12, 6, 8] }],
+  obstacles: [{ id: 'site-office', kind: 'office', pos: [0, 0, -24], size: [12, 6, 8] }],
   noFlyZones: [],
   ground: { bearingCapacity: 25, grade: '다짐 지반' },
   rigging: { rigTime: 60, derigTime: 30, trialLiftTime: 0 },

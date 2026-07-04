@@ -6,6 +6,7 @@ import { MobileCraneView } from './render/MobileCraneView.js';
 import { TowerCraneView } from './render/TowerCraneView.js';
 import { LoadView } from './render/LoadView.js';
 import { SiteView } from './render/SiteView.js';
+import { Effects } from './render/Effects.js';
 import { Simulation } from './sim/Simulation.js';
 import { Recorder, replay } from './sim/Recorder.js';
 import { KeyboardControl } from './control/KeyboardControl.js';
@@ -32,6 +33,7 @@ let sim = null;
 let craneViews = [];
 let loadView = null;
 let siteView = null;
+let effects = null;
 let activeCrane = 0; // 조종 중인 크레인 (Tab 전환)
 let paused = false;
 let macroPlan = null;
@@ -114,6 +116,7 @@ function loadScenario(idx) {
   for (const v of craneViews) sceneManager.scene.remove(v.root);
   if (loadView) sceneManager.scene.remove(loadView.root);
   if (siteView) sceneManager.scene.remove(siteView.root);
+  if (effects) effects.dispose();
 
   sim = new Simulation(entry.scenario);
   sim.setTimeScale(5); // 실제 크레인 속도는 느리므로 기본 ×5
@@ -135,6 +138,7 @@ function loadScenario(idx) {
   sceneManager.scene.add(loadView.root);
   siteView = new SiteView(state, entry.scenario);
   sceneManager.scene.add(siteView.root);
+  effects = new Effects(sceneManager.scene);
   const framePoints = [
     ...entry.scenario.cranes.map((c) => c.basePos),
     ...(entry.scenario.loads ?? []).flatMap((l) => [
@@ -143,6 +147,7 @@ function loadScenario(idx) {
       ...(l.route ?? []).map((leg) => leg.target),
     ].filter(Boolean)),
   ];
+  sceneManager.applySite(entry.scenario, framePoints); // 그림자·포그·펜스 현장 맞춤
   sceneManager.framePoints(framePoints);
   dashboard.setScenario(scenarioIdx);
   dashboard.setCranes(entry.scenario.cranes, activeCrane);
@@ -162,6 +167,7 @@ window.addEventListener('keydown', (e) => {
 
   if (e.code === 'KeyN') loadScenario(scenarioIdx + (e.shiftKey ? -1 : 1));
   if (e.code === 'KeyO') loadScenario(scenarioIdx); // 현재 시나리오 리셋
+  if (e.code === 'KeyG') sceneManager.toggleGrid(); // 개발용 그리드·축
 
   if (e.code === 'Tab') {
     activeCrane = (activeCrane + 1) % sim.getState().cranes.length;
@@ -277,6 +283,7 @@ function loop(now) {
   state.cranes.forEach((cs, i) => craneViews[i].update(cs, state.time));
   siteView.update(state); // 트럭 등 현장 상태 (부재 동반 이동은 코어가 처리)
   loadView.update(state.loads, state.trucks, state.cranes, state.time);
+  effects.update(state); // 안착·주행 먼지 (상태 전이·시뮬 시간 결정론)
 
   sceneManager.render();
   drawHUD(state, command);

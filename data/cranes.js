@@ -176,7 +176,7 @@ export const PLACE_SCENARIO = {
   ],
   obstacles: [
     // 목표 옆 구조물 (매달린 부재가 스치면 충돌 카운트)
-    { id: 'structure-1', pos: [10, 0, 24], size: [4, 8, 4] },
+    { id: 'structure-1', kind: 'structure', pos: [10, 0, 24], size: [4, 8, 4] },
   ],
   noFlyZones: [
     // 크레인 뒤편 금지구역 (기준 궤적과 무관, 잘못 선회 시 침범)
