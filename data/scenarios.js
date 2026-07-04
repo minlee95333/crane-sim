@@ -285,6 +285,35 @@ const S9 = {
   planning: { defaultLiftDuration: 300 },
 };
 
+/**
+ * S10 — 픽앤캐리(주행 인양) 현장 (SIM_DESIGN T2-⑧):
+ *   좁고 긴 통로형 부지. 반입 모듈을 픽업 지점에서 반대편 설치 지점으로 옮기는데,
+ *   픽업과 목표가 78m 이격 — 한 셋업(도달 지름 ~72m)으로 둘 다 담을 수 없다.
+ *   빈 재배치로도 "픽업+목표 동시 도달 셋업"이 없으므로, 크레인이 하중을 매단 채
+ *   중앙으로 주행(픽앤캐리)해 안착한다. 감격 정격(정적의 66%)과 주행 중 전도가 제약.
+ *
+ *   차등: 12t 모듈은 캐리 가능. 규칙 기반(정적 정격)만 보면 40t도 될 것 같지만,
+ *   물리(감격 정격)로는 캐리 불가 — 별도 세트다운 재배치가 필요해진다.
+ */
+const CARRY_CRAWLER = {
+  ...CRAWLER_100T,
+  id: 'PC-01',
+  name: 'Pick&Carry Crawler',
+  basePos: [34, 0, 0], // 픽업 근처에서 시작
+  planning: { movable: true, travelSpeed: 1.0, setupTime: 300, teardownTime: 150, carrySpeed: 0.5, carryAccel: 0.3, carryRadius: 8 },
+};
+const S10 = {
+  site: { width: 120, depth: 40, minX: -60, minZ: -20 },
+  cranes: [CARRY_CRAWLER],
+  loads: [
+    { id: 'PM-1', name: '설비 모듈 1', size: [3, 2, 3], mass: 12, pos: [44, 0, 6], target: [-34, 6] },
+    { id: 'PM-2', name: '설비 모듈 2', size: [3, 2, 3], mass: 10, pos: [44, 0, -6], target: [-34, -6] },
+  ],
+  ground: { bearingCapacity: 30, grade: '다짐 노반' },
+  rigging: { rigTime: 45, derigTime: 25, trialLiftTime: 0 },
+  planning: { defaultLiftDuration: 300 },
+};
+
 export const SCENARIOS = [
   { id: 'free', name: '자유 연습', desc: '목표 없음 — 부재 4종 자유 조작', scenario: DEFAULT_SCENARIO },
   { id: 'place-basic', name: 'S1 기본 안착', desc: '픽업 → 선회 40° → 목표 안착', scenario: S1 },
@@ -296,4 +325,5 @@ export const SCENARIOS = [
   { id: 'rig-real', name: 'S7 리깅 현실화', desc: '줄걸이 90s·해체 45s·시험인양 10s — 사이클타임 현실화', scenario: S7 },
   { id: 'macro-plan', name: 'S8 전체 계획 현장', desc: '크레인 3대 · 양중물 12개 · 셋업 이동과 시공순서', scenario: S8 },
   { id: 'yard-erection', name: 'S9 트럭 하역·철골 건립', desc: '트럭 1대 전량 반입 → 야적장 하역 → 2×2 입체 철골 건립 (여정 2단계·고소 안착·전도안정성)', scenario: S9 },
+  { id: 'pick-carry', name: 'S10 픽앤캐리 통로', desc: '픽업·목표 78m 이격 — 하중 매단 채 주행(감격 정격·주행 전도)으로 안착', scenario: S10 },
 ];

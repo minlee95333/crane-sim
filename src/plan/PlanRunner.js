@@ -27,7 +27,7 @@
 //   fuelCost   = Σ travelDist(m) × fuelPerMeter  (크레인 주행 연료)
 
 import { FIXED_DT } from '../sim/Simulation.js';
-import { AutoPilot, checkLiftFeasible } from './AutoPilot.js';
+import { AutoPilot, checkLiftFeasible, checkCarryFeasible } from './AutoPilot.js';
 import { shortestPath, pointInZone } from './PathPlanner.js';
 
 const ZERO = { slew: 0, luff: 0, hoist: 0 };
@@ -237,11 +237,38 @@ export class PlanRunner {
         }
         return;
       }
+      // 재배치(빈 이동): 픽앤캐리 액션도 픽업 셋업(setupPos)이 붙어 있으면 먼저 빈 이동한다
+      // (직전 캐리로 크레인이 멀어졌을 때 픽업 근처로 복귀 → 이후 carryTo 분기가 캐리 실행).
       const need = this.#needsRelocation(ci, action);
       if (need.needsMove || need.needsBoom) {
         if (this.#beginRelocation(ci, action, need)) return; // 헤드 유지 — 재배치 후 기동
         q.shift(); // 재배치 불가 → 영구 실패 스킵
         this.stats[ci].failed += 1;
+        continue;
+      }
+      // 픽앤캐리 액션: 현 위치에서 픽업 → 하중 매단 채 carryTo로 주행 → 안착.
+      // 재배치(빈 이동)와 달리 크레인이 하중을 들고 이동한다 (감격 정격·주행 전도 적용).
+      if (action.carryTo) {
+        const cz = checkCarryFeasible(this.sim, ci, action.loadId, action.carryTo, this.opts.autopilot ?? {});
+        if (cz.feasible) {
+          q.shift();
+          this.active[ci] = new AutoPilot(this.sim, ci, action.loadId, {
+            ...(this.opts.autopilot ?? {}), carryTo: action.carryTo,
+          });
+          this.#event('carryStart', ci, action.loadId, { to: [...action.carryTo] });
+          this.blockedReason[ci] = null;
+          return;
+        }
+        if (cz.blocked) {
+          if (this.blockedReason[ci] !== cz.reason) {
+            this.blockedReason[ci] = cz.reason;
+            this.#event('liftBlocked', ci, action.loadId, { reason: cz.reason });
+          }
+          return;
+        }
+        q.shift();
+        this.stats[ci].failed += 1;
+        this.#event('liftFailed', ci, action.loadId, { reason: cz.reason, infeasible: true });
         continue;
       }
       if (!action.loadId) {

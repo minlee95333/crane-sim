@@ -16,7 +16,7 @@
 
 import { FIXED_DT } from '../sim/Simulation.js';
 import { HOOK_GAP } from '../core/World.js';
-import { checkStability } from '../core/Stability.js';
+import { checkStability, checkTravelStability, pickCarryCapacity } from '../core/Stability.js';
 
 const DEFAULTS = {
   maxSteps: 40000, // 안전 타임아웃 (약 666s 시뮬시간)
@@ -147,6 +147,81 @@ export function checkLiftFeasible(sim, craneId, loadId, opts = {}) {
 }
 
 /**
+ * 픽앤캐리(주행 인양) 타당성 (SIM_DESIGN T2-⑧).
+ * 픽업은 현 셋업에서, 목표는 캐리 목적지(carryTo)에서 도달하되, 그 사이를 하중을 매단 채
+ * 주행한다. 세 지점의 정격 규칙이 다르다:
+ *   - 픽업/안착: 크레인 정지 → 정적 정격 × 동하중계수
+ *   - 캐리 주행: 감격 정격(pickCarryFactor) + 주행 중 전도 안정성
+ * @param {[number,number]} carryTo 캐리 목적지 베이스 [x, z]
+ * @returns {{feasible, reason?, carryRadius?, carryHeight?, target?, travelY?, rPick?, rPlace?}}
+ */
+export function checkCarryFeasible(sim, craneId, loadId, carryTo, opts = {}) {
+  const crane = sim.world.cranes[craneId];
+  const load = sim.world.loads.find((l) => l.id === loadId);
+  if (!crane || crane.spec.type !== 'mobile')
+    return { feasible: false, reason: '픽앤캐리는 이동식 크레인만 가능' };
+  if (!load) return { feasible: false, reason: `부재 없음: ${loadId}` };
+  if (!load.target) return { feasible: false, reason: `목표 미정의: ${loadId}` };
+
+  const planning = crane.spec.planning ?? {};
+  if (!(planning.movable ?? true)) return { feasible: false, reason: '고정식 크레인' };
+  const rating = crane.spec.rating ?? {};
+  const dyn = rating.dynamicFactor ?? 1.0;
+  const deduct = rating.hookBlockMass ?? 0;
+
+  // opts.fromBase: 가상 픽업 셋업 평가 (재배치 후 캐리 후보용). 기본은 현 베이스.
+  const [bx, bz] = opts.fromBase ?? [crane.basePos[0], crane.basePos[2]];
+  const [rMin, rMax] = crane.getRadiusRange();
+
+  // 픽업: 픽업 셋업에서 도달 + 정적 정격 (크레인 정지)
+  const rPick = Math.hypot(load.pos[0] - bx, load.pos[2] - bz);
+  if (rPick < rMin - 0.05 || rPick > rMax + 0.05)
+    return { feasible: false, reason: `픽업 반경 ${rPick.toFixed(1)}m 도달범위 밖 [${rMin.toFixed(1)}, ${rMax.toFixed(1)}]` };
+  if (load.mass * dyn > crane.capacityAtRadius(rPick) - deduct)
+    return { feasible: false, reason: `픽업 정격 초과 @r=${rPick.toFixed(1)}m` };
+
+  // 안착: 캐리 목적지에서 도달 + 정적 정격
+  const rPlace = Math.hypot(load.target[0] - carryTo[0], load.target[1] - carryTo[1]);
+  if (rPlace < rMin - 0.05 || rPlace > rMax + 0.05)
+    return { feasible: false, reason: `안착 반경 ${rPlace.toFixed(1)}m 도달범위 밖 (캐리 목적지 기준)` };
+  if (load.mass * dyn > crane.capacityAtRadius(rPlace) - deduct)
+    return { feasible: false, reason: `안착 정격 초과 @r=${rPlace.toFixed(1)}m` };
+
+  // 캐리: 하중을 몸체 가까이(캐리 반경) 낮게 매달고 주행 → 감격 정격 + 주행 전도
+  const carryRadius = Math.min(rMax, Math.max(rMin, planning.carryRadius ?? rMin + 2));
+  const carryHeight = load.size[1] / 2 + (planning.carryClearance ?? 0.8); // 하중 무게중심 높이
+  const deratedCap = pickCarryCapacity(crane.capacityAtRadius(carryRadius), rating) - deduct;
+  if (load.mass > deratedCap)
+    return { feasible: false, reason: `픽앤캐리 감격 정격 초과: ${load.mass}t > 감격 ${deratedCap.toFixed(1)}t @r=${carryRadius.toFixed(1)}m` };
+
+  const ground = sim.scenario?.ground ?? null;
+  if (crane.spec.masses) {
+    const accel = planning.carryAccel ?? 0.3;
+    const ts = checkTravelStability({
+      spec: crane.spec, boomLength: crane.boomLength,
+      carryRadius, carryHeight, loadMass: load.mass, accel,
+    });
+    if (!ts.tipOK)
+      return { feasible: false, reason: `주행 중 전도 여유 부족: 안전율 ${ts.tippingMargin.toFixed(2)} < 1.33` };
+    // 지반: 캐리 반경 기준 접지압 (정지 검사 재사용)
+    if (ground) {
+      const gs = checkStability({ spec: crane.spec, boomLength: crane.boomLength, radius: carryRadius, loadMass: load.mass, ground });
+      if (!gs.groundOK)
+        return { feasible: false, reason: `지반 지지력 부족(캐리): 접지압 ${gs.groundPressure.toFixed(1)} > ${ground.bearingCapacity}` };
+    }
+  }
+
+  const blockedReason = liftBlockedReason(sim, load);
+  if (blockedReason) return { feasible: false, blocked: true, reason: blockedReason };
+
+  const travelY = requiredTravelY(sim, load, opts.clearance ?? DEFAULTS.clearance);
+  return {
+    feasible: true, carryRadius, carryHeight,
+    target: [...load.target], travelY, rPick, rPlace,
+  };
+}
+
+/**
  * 사이클 타임 분석적 근사 (SIM_DESIGN 2.5절의 "근사 모드").
  * 물리 시뮬 없이 속도 한계·거리로 닫힌식 추정 — 계획 탐색의 후보 특징량,
  * V2 duration 추정 대체용. 가속 램프·P-제어 감속을 무시하므로 보정계수 1.15를 곱한다.
@@ -231,12 +306,24 @@ export class AutoPilot {
     // 시작 시점의 여정 단계 — 중간 단계(하역) 안착은 stage 전진으로 성공 판정
     this._startStage = l0?.stage ?? 0;
 
-    const fz = checkLiftFeasible(sim, craneId, loadId, this.opts);
+    // 픽앤캐리: opts.carryTo([x,z]) 지정 시 하중을 매단 채 목적지로 주행하는 양중.
+    this.carryTo = opts.carryTo ?? null;
+    this.carrying = false;
+    this._carryVel = 0;
+
+    const fz = this.carryTo
+      ? checkCarryFeasible(sim, craneId, loadId, this.carryTo, this.opts)
+      : checkLiftFeasible(sim, craneId, loadId, this.opts);
     if (!fz.feasible) {
       this.#finish(false, fz.reason, 'infeasible');
     } else {
       this.travelY = fz.travelY;
       this.target = fz.target;
+      if (this.carryTo) {
+        this.carrying = true;
+        this.carryRadius = fz.carryRadius;
+        this.carryHeight = fz.carryHeight;
+      }
       this.#setPhase('goto-load');
     }
   }
@@ -290,7 +377,7 @@ export class AutoPilot {
           // 줄걸이 작업 대기 (크레인은 World가 동결)
         } else if (l.state === 'hooked' && l.hookedBy === this.craneId) {
           this._toggleRequested = false;
-          this.#setPhase(this.trialTime > 0 ? 'trial' : 'lift');
+          this.#setPhase(this.trialTime > 0 ? 'trial' : this.carrying ? 'lift-carry' : 'lift');
         } else {
           this._toggleRequested = false;
           this.#finish(false, '줄걸이 실패 (후크가 부재 범위 밖)');
@@ -306,7 +393,53 @@ export class AutoPilot {
           command = { slew: 0, luff: 0, hoist: clamp((holdY - hook[1]) * o.hoistGain, -1, 0.4) };
         } else {
           this._trialSteps += 1; // 유지 시간 카운트 (정지 상태)
-          if (this._trialSteps * FIXED_DT >= this.trialTime) this.#setPhase('lift');
+          if (this._trialSteps * FIXED_DT >= this.trialTime)
+            this.#setPhase(this.carrying ? 'lift-carry' : 'lift');
+        }
+        break;
+      }
+
+      case 'lift-carry': {
+        // 픽앤캐리 준비: 하중을 캐리 반경으로 당기고 캐리 높이(낮게)까지만 권상
+        const hookCarryY = this.carryHeight + l.size[1] / 2 + HOOK_GAP;
+        command = {
+          slew: 0,
+          luff: clamp((this.carryRadius - c.radius) * o.luffGain, -1, 1),
+          hoist: clamp((hookCarryY - hook[1]) * o.hoistGain, -1, 1),
+        };
+        if (Math.abs(c.radius - this.carryRadius) < 0.5 && Math.abs(hook[1] - hookCarryY) < 0.4) {
+          this.#setPhase('carry');
+        }
+        break;
+      }
+
+      case 'carry': {
+        // 하중을 매단 채 베이스를 목적지(carryTo)로 주행 — 가감속 램프.
+        // 베이스 이동은 이 페이즈의 고유 부작용 (AutoPilot이 곧 실행 엔진).
+        const crane = this.sim.world.cranes[this.craneId];
+        const planning = crane.spec.planning ?? {};
+        const speed = Math.max(0.01, planning.carrySpeed ?? 0.4); // 캐리는 느리게 (안전)
+        const accel = Math.max(0.01, planning.carryAccel ?? 0.3);
+        const dx = this.carryTo[0] - crane.basePos[0];
+        const dz = this.carryTo[1] - crane.basePos[2];
+        const remD = Math.hypot(dx, dz);
+        // 팔은 캐리 자세 유지 (반경·높이 고정, 선회 없음)
+        const hookCarryY = this.carryHeight + l.size[1] / 2 + HOOK_GAP;
+        command = {
+          slew: 0,
+          luff: clamp((this.carryRadius - c.radius) * o.luffGain, -1, 1),
+          hoist: clamp((hookCarryY - hook[1]) * o.hoistGain, -1, 1),
+        };
+        if (remD < 0.15) {
+          this._carryVel = 0;
+          this.carrying = false; // 이후 'lift'는 정상 경로(→ goto-target)
+          this.#setPhase('lift');
+        } else {
+          const vAllow = Math.min(speed, Math.sqrt(2 * accel * remD));
+          this._carryVel = Math.min(this._carryVel + accel * FIXED_DT, vAllow);
+          const stepD = Math.min(remD, this._carryVel * FIXED_DT);
+          crane.basePos[0] += (dx / remD) * stepD;
+          crane.basePos[2] += (dz / remD) * stepD;
         }
         break;
       }

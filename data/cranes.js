@@ -34,6 +34,7 @@ export const CRAWLER_100T = {
   rating: {
     dynamicFactor: 1.1, // 동하중계수 (인양 충격)
     hookBlockMass: 0.35, // 후크블록 공제 (t)
+    pickCarryFactor: 0.66, // 픽앤캐리 정격 감격 (주행 인양 시 정적 정격의 66%)
   },
 
   limits: {

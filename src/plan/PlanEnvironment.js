@@ -18,10 +18,11 @@
 
 import { Simulation, FIXED_DT } from '../sim/Simulation.js';
 import { PlanRunner, bodyRadiusOf } from './PlanRunner.js';
-import { checkLiftFeasible, estimateCycleTime, liftBlockedReason } from './AutoPilot.js';
+import { checkLiftFeasible, estimateCycleTime, liftBlockedReason, checkCarryFeasible } from './AutoPilot.js';
 import { setupCandidates, planningZones } from './MacroPlanner.js';
 import { radiusRangeOf } from './SetupPlanner.js';
 import { pointInZone } from './PathPlanner.js';
+import { pickCarryCapacity } from '../core/Stability.js';
 
 const DEFAULTS = {
   timeCostPerMin: 1, // 분당 시간 비용
@@ -72,6 +73,7 @@ export class PlanEnvironment {
     const action = { craneId: c.craneId, loadId: c.loadId };
     if (c.setupPos) action.setupPos = c.setupPos; // 재배치 후 양중
     if (c.boomLength != null) action.boomLength = c.boomLength;
+    if (c.carryTo) action.carryTo = c.carryTo; // 픽앤캐리 (하중 매단 채 주행)
     this.runner.queues[c.craneId].push(action);
     this.#evacuateIdleCranes(c); // 작업원 안의 유휴 크레인은 반경 밖으로 퇴피 이동
     this.assigned.add(`${c.loadId}:${c.stage}`);
@@ -187,7 +189,9 @@ export class PlanEnvironment {
             ],
           });
         } else if (!fz.blocked) {
-          const c = this.#relocCandidate(ci, l, circles);
+          // 재배치(빈 이동으로 픽업+목표 둘 다 도달하는 셋업)를 우선 시도,
+          // 그런 셋업이 없으면(픽업·목표가 너무 멀어 한 셋업에 안 들어옴) 픽앤캐리 폴백.
+          const c = this.#relocCandidate(ci, l, circles) ?? this.#carryCandidate(ci, l, circles);
           if (c) out.push(c);
         }
       }
@@ -272,6 +276,89 @@ export class PlanEnvironment {
         relocTime / 600, // 재배치 시간 (정규화)
       ],
     };
+  }
+
+  /**
+   * 픽앤캐리 후보: 재배치로도 픽업+목표를 한 셋업에 담을 수 없을 때(둘이 너무 멀 때),
+   * 현 위치에서 픽업 → 하중 매단 채 목표 도달 셋업으로 주행 → 안착.
+   * 감격 정격·주행 전도(checkCarryFeasible)로 제약된다.
+   * @returns {Object|null} carryTo가 붙은 후보. 불가하면 null
+   */
+  #carryCandidate(ci, l, circles) {
+    if (liftBlockedReason(this.sim, l)) return null;
+    const crane = this.sim.world.cranes[ci];
+    const spec = crane.spec;
+    if (spec.type !== 'mobile') return null;
+    const planning = spec.planning ?? {};
+    if (!(planning.movable ?? true)) return null;
+
+    const [bx, , bz] = crane.basePos;
+    const occupied = this.#occupiedPositions(ci);
+    const myR = Math.max(bodyRadiusOf(crane), spec.geometry.tailSwingRadius ?? 0);
+    const gap = this.opts.runner?.bodyClearance ?? 1.0;
+    const clearSpot = (pos, radius) =>
+      occupied.every((o) => Math.hypot(pos[0] - o.pos[0], pos[1] - o.pos[1]) >= myR + o.r + gap) &&
+      !this.#workConflict(pos, radius, circles);
+
+    // 픽업 베이스: 현 위치에서 픽업 가능하면 그대로, 아니면(직전 캐리로 멀어짐)
+    // 픽업 도달 셋업으로 먼저 빈 재배치. 감격 정격 판정은 checkCarryFeasible이 한다.
+    const rating = spec.rating ?? {};
+    const dyn = rating.dynamicFactor ?? 1.0;
+    const [rMin, rMax] = crane.getRadiusRange();
+    const rPickCur = Math.hypot(l.pos[0] - bx, l.pos[2] - bz);
+    const curCanPick = rPickCur >= rMin - 0.05 && rPickCur <= rMax + 0.05 &&
+      l.mass * dyn <= crane.capacityAtRadius(rPickCur) - (rating.hookBlockMass ?? 0);
+    let pickupSetup = null;
+    if (!curCanPick) {
+      const pk = this.#setupsReaching(ci, l, l.pos);
+      pickupSetup = pk.find((s) => !s.sameSetup && clearSpot(s.pos, s.actualRadius)) ?? null;
+      if (!pickupSetup) return null;
+    }
+    const fromBase = pickupSetup ? pickupSetup.pos : [bx, bz];
+
+    // 캐리 목적지: 목표 도달 셋업
+    for (const cand of this.#setupsReaching(ci, l, l.target)) {
+      if (!clearSpot(cand.pos, cand.actualRadius)) continue;
+      const cz = checkCarryFeasible(this.sim, ci, l.id, cand.pos, { fromBase });
+      if (!cz.feasible) continue;
+      const travelSpeed = Math.max(0.01, planning.travelSpeed ?? 1.5);
+      const carrySpeed = Math.max(0.01, planning.carrySpeed ?? 0.4);
+      const worked = this.runner.stats[ci].completed > 0 || this.runner.stats[ci].relocSteps > 0;
+      const relocTime = pickupSetup
+        ? (worked ? (planning.teardownTime ?? 300) : 0) + pickupSetup.path.distance / travelSpeed + (planning.setupTime ?? 600)
+        : 0;
+      const carryDist = Math.hypot(cand.pos[0] - fromBase[0], cand.pos[1] - fromBase[1]);
+      const est = relocTime + carryDist / carrySpeed + (l.rigTime ?? 0) + (l.derigTime ?? 0) + 60;
+      const [, rMaxB] = radiusRangeOf(spec, crane.boomLength);
+      const deratedCap = pickCarryCapacity(crane.capacityAtRadius(cz.carryRadius), rating);
+      return {
+        craneId: ci, loadId: l.id, stage: l.stage, est, reloc: relocTime,
+        setupPos: pickupSetup ? [...pickupSetup.pos] : undefined, // 픽업 전 빈 재배치
+        carryTo: [...cand.pos],
+        workBase: [...cand.pos], workRadius: cand.actualRadius,
+        features: [
+          cz.rPick / rMaxB, cz.rPlace / rMaxB,
+          l.mass / Math.max(deratedCap, 0.1), // 감격 정격 대비 하중률
+          est / 300, carryDist / 600,
+        ],
+      };
+    }
+    return null;
+  }
+
+  /** 특정 점(pickup 또는 target)을 도달하는 셋업 후보 (캐시). setupCandidates 재사용. */
+  #setupsReaching(ci, l, point) {
+    const crane = this.sim.world.cranes[ci];
+    const [bx, , bz] = crane.basePos;
+    const key = `reach|${ci}|${bx.toFixed(1)},${bz.toFixed(1)}|${point[0]},${point[1] ?? point[2]}|${l.id}@${l.stage}`;
+    let list = this._setupCache.get(key);
+    if (list === undefined) {
+      const p2 = point.length === 3 ? [point[0], point[2]] : [point[0], point[1]];
+      const lift = { id: l.id, pos: p2, target: p2, targetHeight: 0, mass: l.mass };
+      list = setupCandidates(crane.spec, lift, this.scenario, [bx, bz], { topK: 8 });
+      this._setupCache.set(key, list);
+    }
+    return list;
   }
 
   /**

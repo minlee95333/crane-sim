@@ -77,3 +77,76 @@ export function checkStability({
     direction,
   };
 }
+
+const G = 9.81; // 중력가속도 (m/s²) — 동적 하중전이 항의 무차원화용
+
+/**
+ * 픽앤캐리(주행 인양) 정격 감격 (SIM_DESIGN T2-⑧).
+ * 하중을 매단 채 주행하면 노면 요철·동하중으로 정격이 급감한다 — 정적 정격 × 감격계수.
+ * 감격계수는 제원(rating.pickCarryFactor)에서 온다 (크롤러 오버프론트 관행 ~0.66~0.75).
+ * @param {number} staticCapacity 캐리 반경에서의 정적 정격 (t)
+ * @param {Object} rating spec.rating
+ * @returns {number} 감격 정격 (t)
+ */
+export function pickCarryCapacity(staticCapacity, rating = {}) {
+  return staticCapacity * (rating.pickCarryFactor ?? 0.66);
+}
+
+/**
+ * 주행 중 전도 안정성 (픽앤캐리): 하중을 캐리 반경에 매단 채 주행할 때
+ * 종방향 가감속이 하중을 관성으로 전도선 쪽에 실어 여유를 깎는다.
+ *
+ * 정적 전도에 동적 항을 더한다:
+ *   overturning = (load+hook)·(rCarry−d) + boom·(boomCG−d) + load·(a/g)·hCarry
+ *   - 첫 두 항: 정적 (checkStability와 동일 구조)
+ *   - 셋째 항: 관성력 load·a 가 캐리 높이 hCarry에서 만드는 추가 전도모멘트
+ * 크롤러 주행은 트랙 종축 정렬(over-front) — 전도선 d = bodyLength/2.
+ *
+ * @param {Object} p
+ * @param {Object} p.spec 크레인 제원
+ * @param {number} p.boomLength 붐길이 (m)
+ * @param {number} p.carryRadius 캐리 반경 (m, 하중을 몸체 가까이 — 보통 최소반경)
+ * @param {number} p.carryHeight 캐리 시 하중 무게중심 높이 (m, 지면 위)
+ * @param {number} p.loadMass 하중 (t)
+ * @param {number} p.accel 주행 가감속 크기 (m/s², 최악 = 제동)
+ * @param {'front'|'side'} [p.direction] 전도선 방향 (기본 front = 주행 정렬)
+ * @param {number} [p.safetyFactor]
+ * @returns {{ok, skipped?, tipOK, tippingMargin, deratedFrom, direction}}
+ */
+export function checkTravelStability({
+  spec,
+  boomLength,
+  carryRadius,
+  carryHeight,
+  loadMass,
+  accel,
+  direction = 'front',
+  safetyFactor = DEFAULT_SAFETY,
+}) {
+  const m = spec.masses;
+  const g = spec.geometry;
+  if (!m) return { ok: true, skipped: true };
+
+  const d = direction === 'side' ? g.bodyWidth / 2 : g.bodyLength / 2;
+  const boomMass = (m.boomPerMeter ?? 0.35) * boomLength;
+  const hookMass = spec.rating?.hookBlockMass ?? 0;
+  const boomCG = g.pivotOffset + (carryRadius - g.pivotOffset) / 2;
+
+  const stabilizing =
+    m.base * d + m.counterweight * (d + (g.tailSwingRadius ?? 4.5));
+  const staticOT =
+    (loadMass + hookMass) * Math.max(0, carryRadius - d) +
+    boomMass * Math.max(0, boomCG - d);
+  // 동적 하중전이: 관성력(load·a)이 캐리 높이에서 만드는 전도모멘트 (무차원화 a/g)
+  const dynamicOT = loadMass * (Math.abs(accel) / G) * Math.max(0, carryHeight);
+  const overturning = staticOT + dynamicOT;
+  const tippingMargin = overturning > 1e-9 ? stabilizing / overturning : Infinity;
+
+  return {
+    ok: tippingMargin >= safetyFactor,
+    tipOK: tippingMargin >= safetyFactor,
+    tippingMargin,
+    dynamicShare: overturning > 0 ? dynamicOT / overturning : 0,
+    direction,
+  };
+}

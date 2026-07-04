@@ -104,9 +104,13 @@
 - 최대 작업 풍속(부재 수풍면적별), 풍속→작업중단/흔들림 증가 → **작업 가능 시간대(weather window)**.
 - 스케줄 실현성에 직결. Sway에 바람 외력 항 추가로 물리 연결 가능.
 
-#### T2-⑧ 픽앤캐리(주행 인양) 감격 & 셋업/이동/조립 시간
+#### T2-⑧ 픽앤캐리(주행 인양) 감격 & 셋업/이동/조립 시간 ✅ (P7.7)
 - 크롤러가 하중 걸고 주행 시 정격 급감, 크레인 이동·조립/해체 시간(대형 크레인은 수 시간~일).
 - V2에 setup/travel/teardown 시간축 있음 → 물리 근거 보강.
+- **구현**: 감격 정격 = 정적 × `rating.pickCarryFactor`(0.66). 주행 중 전도는 정적 모멘트 +
+  종방향 가속 하중전이 동적 항. 잘 실행된 캐리(하중을 몸체 가까이·낮게)에서는 감격 정격이
+  실질 제약이고, 전도는 과중·과속·큰 캐리반경에서 문제. AutoPilot 캐리 페이즈가 베이스를
+  주행시켜 한 셋업으로 픽업·목표 동시 도달 불가한 양중을 완주(S10).
 
 ### 🟢 Tier 3 — 고급(조작 숙련 / IRL / 정밀도)
 
@@ -209,6 +213,7 @@
 | **P7** | V2 연동 + **PlanEnvironment** | PlanEnvironment(semi-MDP, 후보 선택), estimateCycleTime(근사 모드), oracle.js(evaluateLift/exportPlanSpec) | ✅ 2026-07-03 |
 | **P7.5** | **실행 통합 + 차등 시연** — 부품을 실행 계층에 배선 | PlanRunner 재배치 상태기계(park→teardown→travel→setup, basePos 실이동·연료비), moveTo 퇴피 액션, 3D 간섭 양보를 능동 퇴피로(붐 이격=luff·away선회 / 테일=거리기울기 선회, holdClearance 방어선), macroToPlan 다리, S9 야적장 철골 시나리오, examples/differential.js (규칙 vs 물리 순위 역전 입증) | ✅ 2026-07-03 |
 | **P7.6** | **시뮬 완전성** — RL 전 실행 계층 보강 | PlanEnvironment 재배치 후보(셋업 탐색 동반, S8/S9 완주), 작업원 hard 간섭 순차화, 유휴 크레인 자동 퇴피 이동(clash 근본 차단), 주행 가감속 램프·방향성 차단·경로 재계획·비상 안착, **트럭 코어 승격**(Truck 엔티티·데이터 주도 스펙·충돌체·동반 이동·단일 출차) | ✅ 2026-07-04 |
+| **P7.7** | **픽앤캐리 + 주행 중 전도** (T2-⑧, T3 안정성) | Stability에 감격 정격(pickCarryFactor)·주행 전도(동적 하중전이 항), AutoPilot 캐리 페이즈(picku→lift-carry→carry 베이스 주행→goto-target), checkCarryFeasible(픽업/안착 정적 + 캐리 감격/전도), PlanRunner carryTo 액션, PlanEnvironment 캐리 후보(재배치 불가 시 폴백, 픽업 복귀 재배치 동반), **S10 픽앤캐리 통로**(픽업·목표 78m 이격 — 캐리로만 완주) | ✅ 2026-07-04 |
 | **P8** | (최종) 스케줄링 RL 학습 | makespan/비용 최적화, V2 MAPPO·IRL 재사용 검토 | |
 
 *P1~P2가 최우선: 이 둘이 되면 "여러 양중물의 계획을 넣으면 현실적 타임라인이 나오는" 시뮬레이터가 완성되고, 이후 현실 요소(P3~P6)는 그 정확도를 올리는 작업이 된다. 베이스라인 계획(greedy/최근접)과의 비교도 P2에서 바로 가능.*

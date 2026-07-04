@@ -2,7 +2,7 @@
 // 실행: node src/plan/setuptest.js
 
 import { LoadChart2D } from '../core/LoadChart2D.js';
-import { checkStability } from '../core/Stability.js';
+import { checkStability, checkTravelStability, pickCarryCapacity } from '../core/Stability.js';
 import { MobileCrane } from '../core/MobileCrane.js';
 import { Simulation } from '../sim/Simulation.js';
 import { checkLiftFeasible } from './AutoPilot.js';
@@ -40,6 +40,28 @@ check('연약 지반(15t/m²) → 접지압 초과', st.groundOK === false, `p=$
 st = checkStability({ spec: CRAWLER_100T, boomLength: 40, radius: 12, loadMass: 25, ground: { bearingCapacity: 25 } });
 check('견고 지반(25t/m²) → 통과', st.groundOK === true && st.ok === true);
 check('masses 없는 크레인은 skip', checkStability({ spec: { geometry: {} }, boomLength: 30, radius: 10, loadMass: 2 }).skipped === true);
+
+// --- 2.5) 픽앤캐리: 정격 감격 + 주행 중 전도 (T2-⑧) ---
+console.log('--- 픽앤캐리 물리 ---');
+check('정격 감격: 정적 12t → 캐리 7.9t (×0.66)', Math.abs(pickCarryCapacity(12, CRAWLER_100T.rating) - 7.92) < 0.01);
+check('감격계수 기본값 0.66', Math.abs(pickCarryCapacity(10, {}) - 6.6) < 1e-9);
+// 정지 캐리(가속 0)는 정적 전도와 동일 구조 — 짧은 캐리 반경이면 안전
+const carryStop = checkTravelStability({ spec: CRAWLER_100T, boomLength: 40, carryRadius: 5, carryHeight: 1.5, loadMass: 8, accel: 0 });
+check('정지 캐리 r=5m 8t → 전도 안전', carryStop.tipOK === true, `margin=${carryStop.tippingMargin.toFixed(2)}`);
+// 동적 항: 제동 가속이 여유를 깎는다 (같은 하중·반경)
+const carryMove = checkTravelStability({ spec: CRAWLER_100T, boomLength: 40, carryRadius: 5, carryHeight: 1.5, loadMass: 8, accel: 0.5 });
+check('주행 캐리(가속 0.5)는 정지보다 여유 감소', carryMove.tippingMargin < carryStop.tippingMargin && carryMove.dynamicShare > 0,
+  `stop=${carryStop.tippingMargin.toFixed(2)} move=${carryMove.tippingMargin.toFixed(2)} dyn=${(carryMove.dynamicShare * 100).toFixed(0)}%`);
+// 100t 크롤러는 트랙이 넓어(6m) 잘 실행된 캐리(가까운 반경)에선 정적으로 안정적 —
+// 실질 제약은 전도가 아니라 정격 감격. 전도는 과중 하중/과속에서만 문제.
+const carryHeavy = checkTravelStability({ spec: CRAWLER_100T, boomLength: 40, carryRadius: 10, carryHeight: 1.5, loadMass: 45, accel: 0.6, direction: 'side' });
+check('과중 캐리(45t, 오버사이드) → 전도 여유 부족', carryHeavy.tipOK === false, `margin=${carryHeavy.tippingMargin.toFixed(2)}`);
+// 실질 제약 입증: r=10m 정적 정격 44t인데 감격 후 29t — 35t 하중이 정적 통과·감격 탈락
+const capStatic = 44; // loadChart r=10
+check('감격이 실질 제약: 35t는 정적 정격(44t) 내지만 감격(29t) 초과',
+  35 < capStatic && 35 > pickCarryCapacity(capStatic, CRAWLER_100T.rating),
+  `감격정격=${pickCarryCapacity(capStatic, CRAWLER_100T.rating).toFixed(1)}t`);
+check('masses 없으면 캐리 전도도 skip', checkTravelStability({ spec: { geometry: {} }, boomLength: 30, carryRadius: 5, carryHeight: 1, loadMass: 2, accel: 0.3 }).skipped === true);
 
 // --- 3) checkLiftFeasible 통합 (동하중 여유 + 지반) ---
 console.log('--- 타당성 검사 통합 ---');

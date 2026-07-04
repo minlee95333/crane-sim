@@ -130,6 +130,16 @@ check('S9: 하역 11 + 건립 11 = 22결정, 11부재 건립 완료', s9.status 
 check('S9: crane 간 접촉 0 (유휴 퇴피 이동 회귀)', w9.craneClashCount === 0);
 check('S9: 부재-구조물 스침 ≤3 (AutoPilot 하강 경로 — 알려진 한계)', w9.collisionCount <= 3);
 
+// S10 픽앤캐리: 픽업·목표 78m 이격 → 한 셋업 불가 → 캐리로 완주 (감격 정격·주행 전도)
+const env10 = new PlanEnvironment(byId('pick-carry'));
+const s10 = greedyRun(env10);
+const has10carry = env10.runner.events.some((e) => e.type === 'carryStart');
+console.log(`  [S10 캐리] ${s10.status} placed=${s10.placed}/2 makespan=${(s10.makespan / 60).toFixed(1)}min carry=${has10carry}`);
+check('S10: 2건 캐리로 완주 (한 셋업/재배치 불가 → 픽앤캐리 폴백)',
+  s10.status === 'success' && s10.placed === 2 && has10carry);
+const s10b = greedyRun(new PlanEnvironment(byId('pick-carry')));
+check('S10: 결정론', s10.makespan === s10b.makespan);
+
 // --- 5) 오류 처리 + 결정론 ---
 let threw = false;
 try {
