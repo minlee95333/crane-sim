@@ -272,8 +272,8 @@ function loop(now) {
   }
 
   state.cranes.forEach((cs, i) => craneViews[i].update(cs));
-  const cargoOffsets = siteView.update(state);
-  loadView.update(state.loads, cargoOffsets);
+  siteView.update(state); // 트럭 등 현장 상태 (부재 동반 이동은 코어가 처리)
+  loadView.update(state.loads, state.trucks);
 
   sceneManager.render();
   drawHUD(state, command);

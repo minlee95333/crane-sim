@@ -3,6 +3,7 @@
 
 import { evaluateSetup, radiusRangeOf } from './SetupPlanner.js';
 import { pointInZone, shortestPath } from './PathPlanner.js';
+import { Truck, deriveTrucks } from '../core/Truck.js';
 
 const xz = (p) => (p.length === 3 ? [p[0], p[2]] : [p[0], p[1]]);
 const d2 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
@@ -126,9 +127,21 @@ function fixedCraneZones(scenario, activeSpec) {
     });
 }
 
+function truckZones(scenario) {
+  // 반입 트럭 도킹 풋프린트 — 하역 베이는 셋업·주행 회피 대상 (시간 무관 예약)
+  return (scenario.trucks ?? deriveTrucks(scenario)).map((spec) =>
+    new Truck(spec).dockZone(0.5),
+  );
+}
+
 /** 이동/셋업 검증에 사용하는 모든 평면 금지영역. */
 export function planningZones(scenario, activeSpec) {
-  return [...siteZones(scenario), ...obstacleZones(scenario), ...fixedCraneZones(scenario, activeSpec)];
+  return [
+    ...siteZones(scenario),
+    ...obstacleZones(scenario),
+    ...fixedCraneZones(scenario, activeSpec),
+    ...truckZones(scenario),
+  ];
 }
 
 function inBounds(pos, scenario) {

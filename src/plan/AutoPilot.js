@@ -41,6 +41,40 @@ const wrap = (a) => {
 };
 
 /**
+ * 시간적 차단 사유 (대기하면 풀림): 반입 전 · 시공순서 선행 미완 · 풍속 초과.
+ * @returns {string|null} 차단 사유. 없으면 null
+ */
+export function liftBlockedReason(sim, load) {
+  if (load.state === 'pending') return `반입 전 (t=${load.arriveTime}s 도착 예정)`;
+  // 시공순서는 최종 안착(건립) 단계에만 — 하역·야적 이동은 선행 무관
+  if (load.finalLeg) {
+    const unmet = load.dependsOn.filter(
+      (id) => sim.world.loads.find((l) => l.id === id)?.state !== 'placed',
+    );
+    if (unmet.length > 0) return `선행 부재 미완: ${unmet.join(', ')}`;
+  }
+  if (sim.world.windDef && sim.world.windSpeed > sim.world.windLimitFor(load))
+    return `풍속 초과: ${sim.world.windSpeed.toFixed(1)} > 한계 ${sim.world.windLimitFor(load)} m/s`;
+  return null;
+}
+
+/**
+ * 필요 이동고도: 장애물·기시공 구조물 위 + 고소 안착 여유 (크레인 권상능력 캡 미적용).
+ */
+function requiredTravelY(sim, load, clearance) {
+  const maxObH = Math.max(
+    0,
+    ...sim.world.obstacles.map((o) => o.size[1]),
+    ...sim.world.loads.filter((l) => l.state === 'placed').map((l) => l.topY),
+  );
+  return Math.max(
+    8,
+    maxObH + load.size[1] + HOOK_GAP + clearance,
+    load.targetElev + load.size[1] + HOOK_GAP + clearance,
+  );
+}
+
+/**
  * 타당성 사전검사: 반경 도달범위·정격하중·목표 유무 + 시간 제약.
  * 시뮬을 돌리지 않고 "이 크레인이 이 양중을 할 수 있는가"를 준정적으로 판정.
  * 계획 탐색(PlanRunner/autoPlan)의 후보 필터로 단독 사용 가능.
@@ -100,35 +134,12 @@ export function checkLiftFeasible(sim, craneId, loadId, opts = {}) {
   }
 
   // --- 시간 제약 (일시 차단 — 대기하면 풀림) ---
-  if (load.state === 'pending')
-    return { feasible: false, blocked: true, reason: `반입 전 (t=${load.arriveTime}s 도착 예정)` };
-  // 시공순서는 최종 안착(건립) 단계에만 — 하역·야적 이동은 선행 무관
-  if (load.finalLeg) {
-    const unmet = load.dependsOn.filter(
-      (id) => sim.world.loads.find((l) => l.id === id)?.state !== 'placed',
-    );
-    if (unmet.length > 0)
-      return { feasible: false, blocked: true, reason: `선행 부재 미완: ${unmet.join(', ')}` };
-  }
-  if (sim.world.windDef && sim.world.windSpeed > sim.world.windLimitFor(load))
-    return {
-      feasible: false,
-      blocked: true,
-      reason: `풍속 초과: ${sim.world.windSpeed.toFixed(1)} > 한계 ${sim.world.windLimitFor(load)} m/s`,
-    };
+  const blockedReason = liftBlockedReason(sim, load);
+  if (blockedReason) return { feasible: false, blocked: true, reason: blockedReason };
 
   // 이동 고도: 장애물·기시공 구조물(placed) 최고높이 위로 부재 바닥이 지나가도록.
   // 고소 안착(기둥 위 거더 등)은 목표 바닥고 + 부재높이도 넘어야 함.
-  const maxObH = Math.max(
-    0,
-    ...sim.world.obstacles.map((o) => o.size[1]),
-    ...sim.world.loads.filter((l) => l.state === 'placed').map((l) => l.topY),
-  );
-  const needY = Math.max(
-    8,
-    maxObH + load.size[1] + HOOK_GAP + clearance,
-    load.targetElev + load.size[1] + HOOK_GAP + clearance,
-  );
+  const needY = requiredTravelY(sim, load, clearance);
   const capY = Math.min(crane.maxHookHeightAt(rLoad), crane.maxHookHeightAt(rTarget)) - 0.5;
   const travelY = Math.min(needY, capY);
 
@@ -139,15 +150,26 @@ export function checkLiftFeasible(sim, craneId, loadId, opts = {}) {
  * 사이클 타임 분석적 근사 (SIM_DESIGN 2.5절의 "근사 모드").
  * 물리 시뮬 없이 속도 한계·거리로 닫힌식 추정 — 계획 탐색의 후보 특징량,
  * V2 duration 추정 대체용. 가속 램프·P-제어 감속을 무시하므로 보정계수 1.15를 곱한다.
+ *
+ * 가상 셋업 평가(재배치 후보용): opts.basePos([x,z])·opts.boomLength를 주면
+ * "크레인이 그 셋업에 있다면"의 사이클 타임을 추정한다. 이때 타당성은 호출자가
+ * 셋업 탐색(evaluateSetup)으로 이미 보장했으므로 opts.assumeFeasible로 검사를 생략한다.
  * @returns {number|null} 추정 사이클 타임 (s). infeasible이면 null
  */
 export function estimateCycleTime(sim, craneId, loadId, opts = {}) {
-  const fz = checkLiftFeasible(sim, craneId, loadId, opts);
-  if (!fz.feasible && !fz.blocked) return null;
-
   const crane = sim.world.cranes[craneId];
   const load = sim.world.loads.find((l) => l.id === loadId);
-  const [bx, , bz] = crane.basePos;
+
+  let fz;
+  if (opts.assumeFeasible) {
+    fz = { feasible: true, travelY: requiredTravelY(sim, load, opts.clearance ?? DEFAULTS.clearance) };
+  } else {
+    fz = checkLiftFeasible(sim, craneId, loadId, opts);
+    if (!fz.feasible && !fz.blocked) return null;
+  }
+
+  const [bx, bz] = opts.basePos ?? [crane.basePos[0], crane.basePos[2]];
+  const boomLen = opts.boomLength ?? crane.boomLength;
   const L = crane.limits;
 
   const th0 = crane.slewAngle;
@@ -159,7 +181,7 @@ export function estimateCycleTime(sim, craneId, loadId, opts = {}) {
   const rT = Math.hypot(load.target[0] - bx, load.target[1] - bz);
 
   // 반경 변경 속도: 타워=트롤리 직결, 이동식=붐끝 수평속도 근사 (L·sinθ·ω, θ~53°)
-  const radial = crane.spec.type === 'tower' ? L.trolleySpeed : crane.boomLength * 0.8 * L.luffRate;
+  const radial = crane.spec.type === 'tower' ? L.trolleySpeed : boomLen * 0.8 * L.luffRate;
   const hoist = L.hoistSpeed;
   const travelY = fz.travelY ?? 10;
   const topY = load.topY;

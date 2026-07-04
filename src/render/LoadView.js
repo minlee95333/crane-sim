@@ -25,19 +25,21 @@ export class LoadView {
     });
   }
 
-  /** @param {Array<Object>} loadStates world 상태의 loads */
-  update(loadStates, cargoOffsets = new Map()) {
+  /**
+   * @param {Array<Object>} loadStates world 상태의 loads (pending 동반 이동은 코어가 반영)
+   * @param {Array<Object>} [trucks] world 상태의 trucks — pending 부재 표시 판정용
+   */
+  update(loadStates, trucks = []) {
+    // 진입 중(가시) 트럭에 적재된 부재 — pending이라도 트럭 위에 실려 보인다
+    const riding = new Set(
+      trucks.filter((t) => t.visible).flatMap((t) => t.loadIds),
+    );
     for (const l of loadStates) {
       const mesh = this.meshes.get(l.id);
       if (!mesh) continue;
-      const cargoOffset = cargoOffsets.get(l.id);
-      mesh.position.set(
-        l.pos[0] + (cargoOffset?.[0] ?? 0),
-        l.pos[1] + (cargoOffset?.[1] ?? 0),
-        l.pos[2] + (cargoOffset?.[2] ?? 0),
-      );
+      mesh.position.set(l.pos[0], l.pos[1], l.pos[2]);
       // 진입 중 pending 부재는 트럭 적재물로 표시하고, 진입 전에는 숨긴다.
-      mesh.visible = l.state !== 'pending' || Boolean(cargoOffset);
+      mesh.visible = l.state !== 'pending' || riding.has(l.id);
       // 상태별 발광: 매달림(녹색조) / 리깅 작업 중(주황조)
       const emissive =
         l.state === 'hooked'

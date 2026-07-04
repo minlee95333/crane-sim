@@ -57,15 +57,11 @@ const s9 = SCENARIOS.find((entry) => entry.id === 'yard-erection').scenario;
 const s9State = new Simulation(s9).getState();
 const siteView = new SiteView(s9State, s9);
 check('전 부재를 운송하는 트럭 1대만 생성', siteView.trucks.length === 1);
-const entryOffsets = siteView.update(s9State);
+siteView.update(s9State);
 const loadView = new LoadView(s9State.loads);
-loadView.update(s9State.loads, entryOffsets);
+loadView.update(s9State.loads, s9State.trucks); // 동반 이동 자체는 코어 담당 — trucktest에서 검증
 check('t=0에 트럭 1대가 진입 시작', siteView.trucks[0].root.visible);
-check(
-  '진입 중 전 부재가 적재된 채 트럭과 함께 표시',
-  entryOffsets.size === s9State.loads.length &&
-    [...loadView.meshes.values()].every((mesh) => mesh.visible),
-);
+check('진입 중 전 부재가 트럭 적재물로 표시', [...loadView.meshes.values()].every((mesh) => mesh.visible));
 const first = siteView.trucks[0];
 const entryStartZ = first.root.position.z;
 siteView.update({ ...s9State, time: 1 });

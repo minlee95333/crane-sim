@@ -1,7 +1,7 @@
 // 3층: 렌더 — 현장 환경 뷰(목표 지점·장애물·인양 금지구역).
 // world 상태의 loads[].target / obstacles / noFlyZones를 받아 표시만 한다.
 import * as THREE from 'three';
-import { truckMotionAt } from '../core/TruckMotion.js';
+import { Truck, deriveTrucks } from '../core/Truck.js';
 
 const MAT = {
   targetFill: new THREE.MeshBasicMaterial({
@@ -32,10 +32,6 @@ const MAT = {
 };
 
 const PLACE_TOL_VIS = 1.5; // World.PLACE_TOL과 동일 (표시용 반경)
-const TRUCK_ENTRY_DURATION = 30;
-const TRUCK_EXIT_DURATION = 30;
-const TRUCK_TRAVEL_DISTANCE = 26;
-const TRUCK_MAX_ACCELERATION = 0.3;
 const TRUCK_WHEEL_RADIUS = 0.55;
 const TRUCK_PITCH_GAIN = 0.08;
 
@@ -45,7 +41,6 @@ export class SiteView {
     this.root = new THREE.Group();
     this.targets = new Map(); // loadId → { fill, ring }
     this.trucks = [];
-    this.cargoOffsets = new Map();
     this.#addLogisticsSite(scenario);
 
     // --- 목표 지점: 안착 허용 반경 원 + 링 ---
@@ -113,7 +108,6 @@ export class SiteView {
 
   /** 안착 완료된 목표는 파란색으로 전환 */
   update(state) {
-    this.cargoOffsets.clear();
     for (const l of state.loads) {
       const t = this.targets.get(l.id);
       if (!t) continue;
@@ -129,60 +123,24 @@ export class SiteView {
         t.ring.material = MAT.targetDone;
       }
     }
-    const loadById = new Map(state.loads.map((load) => [load.id, load]));
+    // 트럭: 코어 Truck의 닫힌식 운동을 그대로 평가 — 물리(World)·재생(SchedulePlayer)과
+    // 단일 진실 원천. 출차 시각은 부재 상태에서 유도(departAtFrom, 공정 갱신과 무관).
     for (const delivery of this.trucks) {
-      const loads = delivery.loadIds.map((id) => loadById.get(id)).filter(Boolean);
-      const entryStart = delivery.arriveTime - TRUCK_ENTRY_DURATION;
-      const exitStart = loads.length > 0 && loads.every((load) => load.stage > 0)
-        ? Math.max(...loads.map((load) => load.yardedAt ?? state.time))
-        : null;
-      let offsetZ = 0;
-      let wheelDistance = 0;
-      let worldAcceleration = 0;
-      if (state.time < entryStart) {
-        delivery.root.visible = false;
-      } else if (state.time < delivery.arriveTime) {
-        const motion = truckMotionAt(state.time - entryStart, {
-          distance: TRUCK_TRAVEL_DISTANCE,
-          duration: TRUCK_ENTRY_DURATION,
-          maxAcceleration: TRUCK_MAX_ACCELERATION,
-        });
-        offsetZ = -delivery.travelDirection * (TRUCK_TRAVEL_DISTANCE - motion.position);
-        wheelDistance = motion.position;
-        worldAcceleration = delivery.travelDirection * motion.acceleration;
-        delivery.root.visible = true;
-      } else if (exitStart == null || state.time < exitStart) {
-        wheelDistance = TRUCK_TRAVEL_DISTANCE;
-        delivery.root.visible = true;
-      } else if (state.time < exitStart + TRUCK_EXIT_DURATION) {
-        const motion = truckMotionAt(state.time - exitStart, {
-          distance: TRUCK_TRAVEL_DISTANCE,
-          duration: TRUCK_EXIT_DURATION,
-          maxAcceleration: TRUCK_MAX_ACCELERATION,
-        });
-        offsetZ = -delivery.travelDirection * motion.position;
-        wheelDistance = TRUCK_TRAVEL_DISTANCE - motion.position;
-        worldAcceleration = -delivery.travelDirection * motion.acceleration;
-        delivery.root.visible = true;
-      } else {
-        delivery.root.visible = false;
-      }
-      delivery.root.position.set(delivery.bayX, 0, delivery.bayZ + offsetZ);
+      const m = delivery.truck.motionAt(state.time, delivery.truck.departAtFrom(state.loads));
+      delivery.root.visible = m.visible;
+      delivery.root.position.set(m.pos[0], 0, m.pos[1]);
+      const worldAcceleration = delivery.travelDirection * m.vehicleAccel;
       delivery.chassis.rotation.x = -worldAcceleration * TRUCK_PITCH_GAIN;
       for (const wheel of delivery.wheels) {
-        wheel.rotation.x = (wheelDistance / TRUCK_WHEEL_RADIUS) * delivery.travelDirection;
-      }
-      if (state.time >= entryStart && state.time < delivery.arriveTime) {
-        for (const load of loads) {
-          this.cargoOffsets.set(load.id, [0, 0, offsetZ]);
-        }
+        wheel.rotation.x = (m.wheelDistance / TRUCK_WHEEL_RADIUS) * delivery.travelDirection;
       }
     }
-    return this.cargoOffsets;
   }
 
   #addLogisticsSite(scenario) {
-    if (!scenario.loads?.some((load) => (load.route?.length ?? 0) > 1)) return;
+    // 트럭: 코어 스펙(scenario.trucks 명시 또는 arriveTime 자동 유도)에서 생성
+    const truckSpecs = scenario.trucks ?? deriveTrucks(scenario);
+    if (truckSpecs.length === 0) return;
 
     const yard = new THREE.Group();
     const slab = new THREE.Mesh(
@@ -203,27 +161,19 @@ export class SiteView {
     const truckMat = new THREE.MeshStandardMaterial({ color: 0x315f86, roughness: 0.55 });
     const trailerMat = new THREE.MeshStandardMaterial({ color: 0x9da4a8, metalness: 0.35 });
     const tireMat = new THREE.MeshStandardMaterial({ color: 0x17191b, roughness: 0.9 });
-    const deliveries = new Map();
-    for (const load of scenario.loads) {
-      const arriveTime = load.arriveTime ?? 0;
-      if (!deliveries.has(arriveTime)) deliveries.set(arriveTime, []);
-      deliveries.get(arriveTime).push(load);
-    }
-    for (const [arriveTime, loads] of deliveries) {
-      const xs = loads.map((load) => load.pos[0]);
-      const zs = loads.map((load) => load.pos[2]);
-      const bayX = xs.reduce((sum, value) => sum + value, 0) / xs.length;
-      const zMin = Math.min(...loads.map((load) => load.pos[2] - load.size[2] / 2));
-      const zMax = Math.max(...loads.map((load) => load.pos[2] + load.size[2] / 2));
-      const z = (zMin + zMax) / 2;
-      const trailerLength = Math.max(7, zMax - zMin + 1);
-      const travelDirection = z >= 0 ? -1 : 1;
+    for (const spec of truckSpecs) {
+      const core = new Truck(spec);
+      const trailerLength = core.size[2];
+      const travelDirection = core.heading[1] >= 0 ? 1 : -1; // z축 성분 기준 (기존 시각 규약)
       const truck = new THREE.Group();
       const chassis = new THREE.Group();
       const wheels = [];
-      const trailer = new THREE.Mesh(new THREE.BoxGeometry(3.2, 1.15, trailerLength), trailerMat);
+      const trailer = new THREE.Mesh(
+        new THREE.BoxGeometry(core.size[0], 1.15, trailerLength),
+        trailerMat,
+      );
       trailer.position.set(0, 0.78, 0);
-      const cab = new THREE.Mesh(new THREE.BoxGeometry(3.2, 3, 3.5), truckMat);
+      const cab = new THREE.Mesh(new THREE.BoxGeometry(core.size[0], 3, 3.5), truckMat);
       cab.position.set(0, 1.5, travelDirection * (trailerLength / 2 + 2));
       chassis.add(trailer, cab);
       truck.add(chassis);
@@ -240,15 +190,17 @@ export class SiteView {
           wheels.push(wheel);
         }
       }
-      truck.position.set(bayX, 0, z);
-      truck.visible = arriveTime === 0;
+      const m0 = core.motionAt(0, null);
+      truck.position.set(m0.pos[0], 0, m0.pos[1]);
+      truck.visible = m0.visible;
       this.root.add(truck);
       this.trucks.push({
+        truck: core,
         root: truck,
-        loadIds: loads.map((load) => load.id),
-        arriveTime,
-        bayX,
-        bayZ: z,
+        loadIds: [...core.loadIds],
+        arriveTime: core.arriveTime,
+        bayX: core.dockPos[0],
+        bayZ: core.dockPos[1],
         travelDirection,
         chassis,
         wheels,

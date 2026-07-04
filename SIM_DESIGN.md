@@ -208,6 +208,7 @@
 | **P6** | T2 (반입·시공순서 DAG·바람) | pending 상태·dependsOn·바람 프로필, blocked/infeasible 구분, 데드락 감지 | ✅ 2026-07-03 |
 | **P7** | V2 연동 + **PlanEnvironment** | PlanEnvironment(semi-MDP, 후보 선택), estimateCycleTime(근사 모드), oracle.js(evaluateLift/exportPlanSpec) | ✅ 2026-07-03 |
 | **P7.5** | **실행 통합 + 차등 시연** — 부품을 실행 계층에 배선 | PlanRunner 재배치 상태기계(park→teardown→travel→setup, basePos 실이동·연료비), moveTo 퇴피 액션, 3D 간섭 양보를 능동 퇴피로(붐 이격=luff·away선회 / 테일=거리기울기 선회, holdClearance 방어선), macroToPlan 다리, S9 야적장 철골 시나리오, examples/differential.js (규칙 vs 물리 순위 역전 입증) | ✅ 2026-07-03 |
+| **P7.6** | **시뮬 완전성** — RL 전 실행 계층 보강 | PlanEnvironment 재배치 후보(셋업 탐색 동반, S8/S9 완주), 작업원 hard 간섭 순차화, 유휴 크레인 자동 퇴피 이동(clash 근본 차단), 주행 가감속 램프·방향성 차단·경로 재계획·비상 안착, **트럭 코어 승격**(Truck 엔티티·데이터 주도 스펙·충돌체·동반 이동·단일 출차) | ✅ 2026-07-04 |
 | **P8** | (최종) 스케줄링 RL 학습 | makespan/비용 최적화, V2 MAPPO·IRL 재사용 검토 | |
 
 *P1~P2가 최우선: 이 둘이 되면 "여러 양중물의 계획을 넣으면 현실적 타임라인이 나오는" 시뮬레이터가 완성되고, 이후 현실 요소(P3~P6)는 그 정확도를 올리는 작업이 된다. 베이스라인 계획(greedy/최근접)과의 비교도 P2에서 바로 가능.*

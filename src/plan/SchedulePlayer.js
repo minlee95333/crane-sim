@@ -2,6 +2,8 @@
 // 상세 붐 동작 전 단계로, TRAVEL은 크레인 베이스를 경로 보간하고
 // LIFT는 양중물을 픽업→목표로 결정론적으로 보간한다.
 
+import { Truck, deriveTrucks } from '../core/Truck.js';
+
 const lerp = (a, b, t) => a + (b - a) * t;
 const clamp01 = (v) => Math.max(0, Math.min(1, v));
 const HOOK_CLEARANCE = 0.6;
@@ -34,6 +36,8 @@ export class SchedulePlayer {
     this.time = 0;
     this.playing = false;
     this.speed = 300;
+    // 트럭: 코어 닫힌식으로 재생 시각의 상태를 재계산 (물리 실행과 동일 규칙)
+    this.trucks = (scenario.trucks ?? deriveTrucks(scenario)).map((s) => new Truck(s));
   }
 
   toggle() {
@@ -170,6 +174,8 @@ export class SchedulePlayer {
       const spec = this.scenario.cranes[i];
       if (!activeCranes.has(spec.id)) this.#parkCrane(state.cranes[i], spec);
     }
+    // 트럭: 재생 부재 상태(yardedAt 등)에서 출차 시각을 유도해 시각 t의 스냅샷으로 교체
+    state.trucks = this.trucks.map((t) => t.snapshot(time, t.departAtFrom(state.loads)));
     state.lastEvent = this.currentEvent(time);
     return state;
   }

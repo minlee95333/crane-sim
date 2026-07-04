@@ -8,6 +8,7 @@
 import { World } from '../core/World.js';
 import { MobileCrane } from '../core/MobileCrane.js';
 import { TowerCrane } from '../core/TowerCrane.js';
+import { Truck, deriveTrucks } from '../core/Truck.js';
 
 const FIXED_DT = 1 / 60; // 물리 스텝 (s)
 
@@ -41,6 +42,10 @@ export class Simulation {
     }
     for (const def of this.scenario.obstacles ?? []) {
       this.world.addObstacle(def);
+    }
+    // 반입 트럭: 명시 스펙(scenario.trucks) 우선, 없으면 arriveTime 그룹 자동 유도
+    for (const def of this.scenario.trucks ?? deriveTrucks(this.scenario)) {
+      this.world.addTruck(new Truck(def));
     }
     for (const def of this.scenario.noFlyZones ?? []) {
       this.world.addNoFlyZone(def);

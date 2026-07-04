@@ -264,6 +264,20 @@ const S9 = {
     // ── 같은 트럭의 지붕 유닛 ──
     memberLoad('M-1', '지붕 유닛 M-1', [6, 1.5, 6], 6, [-34, 5], [-17, 0], [16, 0], 7.0, ['D-1', 'D-2'], 30),
   ],
+  // 반입 트럭 (코어 엔티티 — 데이터 주도): 1대가 전 부재를 싣고 t=0 진입, t=30 도킹.
+  // 전량 하역 후 한 번만 후진 출차. 도킹 풋프린트는 셋업·주행 회피 대상.
+  trucks: [{
+    id: 'T-1',
+    dockPos: [-34, 0],
+    heading: [0, -1], // 남향 전면 — 북측 외곽에서 진입
+    size: [3.2, 2.9, 42], // 트레일러+캡 근사 AABB (부재 적재 범위)
+    bedHeight: TRUCK_BED,
+    arriveTime: 30,
+    entryDistance: 26,
+    entryDuration: 30,
+    exitDuration: 30,
+    loads: ['C-11', 'C-21', 'GX-1', 'GZ-1', 'D-1', 'C-12', 'C-22', 'GX-2', 'GZ-2', 'D-2', 'M-1'],
+  }],
   obstacles: [{ id: 'site-office', pos: [0, 0, -24], size: [12, 6, 8] }],
   noFlyZones: [],
   ground: { bearingCapacity: 25, grade: '다짐 지반' },

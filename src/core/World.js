@@ -21,6 +21,8 @@ export class World {
     this.obstacles = [];
     /** 인양 금지 구역: { id, min:[x,z], max:[x,z] } */
     this.noFlyZones = [];
+    /** @type {import('./Truck.js').Truck[]} 반입 트럭 (코어 엔티티) */
+    this.trucks = [];
     this.time = 0; // 시뮬레이션 경과 시간 (s)
     /** 직전 스텝의 이벤트 메시지 (HUD·로그용) */
     this.lastEvent = null;
@@ -85,6 +87,39 @@ export class World {
     this.noFlyZones.push({ id: def.id, min: [...def.min], max: [...def.max] });
   }
 
+  /** 트럭 등록 — 적재 부재의 도킹 시 위치를 스냅샷 (부재를 먼저 등록할 것) */
+  addTruck(truck) {
+    for (const id of truck.loadIds) {
+      const l = this.loads.find((x) => x.id === id);
+      if (l) truck.cargoDock.set(id, [l.pos[0], l.pos[2]]);
+    }
+    this.trucks.push(truck);
+  }
+
+  /** 트럭 상태 진행: 출차 시각 확정(한 번만) + 위치/단계 + 진입 중 적재 동반 이동 */
+  #stepTrucks() {
+    for (const tr of this.trucks) {
+      // 전량 하역(1단계 완료) 시각 — 이후 건립 등으로 갱신되지 않는다 (재진입 결함 방지)
+      if (tr.departAt == null && tr.loadIds.length > 0) {
+        tr.departAt = tr.departAtFrom(this.loads);
+      }
+      const m = tr.motionAt(this.time);
+      tr.phase = m.phase;
+      tr.pos = m.pos;
+      // 진입 중: 적재(pending) 부재가 트럭과 함께 들어온다 — 도킹 시 원위치(점프 없음)
+      if (m.phase === 'entering') {
+        for (const id of tr.loadIds) {
+          const l = this.loads.find((x) => x.id === id);
+          const dock = tr.cargoDock.get(id);
+          if (l && dock && l.state === 'pending') {
+            l.pos[0] = dock[0] + tr.heading[0] * m.offset;
+            l.pos[2] = dock[1] + tr.heading[1] * m.offset;
+          }
+        }
+      }
+    }
+  }
+
   /** 해당 크레인이 리깅/해체 작업에 묶여 있는가 (작업 중 크레인 조작 동결) */
   #riggingBusy(craneId) {
     return this.loads.some(
@@ -99,6 +134,9 @@ export class World {
   step(dt, commands = []) {
     // 바람 갱신
     this.windSpeed = this.#windAt(this.time);
+
+    // 트럭: 출차 확정·위치·적재 동반 이동
+    this.#stepTrucks();
 
     // 반입: 도착 시각이 지난 부재를 현장에 등장시킴
     for (const load of this.loads) {
@@ -176,6 +214,20 @@ export class World {
         }
       }
     }
+    // 현장의 트럭 차체 = 충돌체. 단 자기 트럭 적재 부재의 하역(1단계) 권상은 예외 —
+    // 적재함에서 들어올리는 정상 작업이 자기 차체와 겹치는 것은 충돌이 아니다.
+    for (const tr of this.trucks) {
+      const ob = tr.obstacle();
+      if (!ob) continue;
+      for (const l of hooked) {
+        if (tr.loadIds.includes(l.id) && l.stage === 0) continue;
+        if (aabbOverlap(l.pos, l.size, ob)) {
+          this.collisionIds.push(ob.id);
+          break;
+        }
+      }
+    }
+
     // 최종 안착(placed)된 부재 = 세워진 구조물 → 충돌체.
     // 관입 여유 0.1m: 거더를 기둥 위에 '접촉' 안착시키는 정상 시공은 충돌이 아님.
     const PEN = 0.1;
@@ -366,6 +418,7 @@ export class World {
       loads: this.loads.map((l) => l.getState()),
       obstacles: this.obstacles.map((o) => ({ id: o.id, pos: [...o.pos], size: [...o.size] })),
       noFlyZones: this.noFlyZones.map((z) => ({ id: z.id, min: [...z.min], max: [...z.max] })),
+      trucks: this.trucks.map((t) => t.snapshot(this.time)),
       wind: this.windDef ? { speed: this.windSpeed, maxOperating: this.windDef.maxOperating ?? null } : null,
       safety: {
         collisionIds: [...this.collisionIds],

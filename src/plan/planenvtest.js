@@ -35,10 +35,15 @@ console.log('--- PlanEnvironment 기본 ---');
 const env = new PlanEnvironment(byId('dual-site'));
 let r = env.reset();
 check('초기 = 의사결정 시점', r.done === false && r.info.status === 'decision');
-check('후보 = 타당 (크레인×양중물) 조합 2개', r.candidates.length === 2,
-  r.candidates.map((c) => `(${c.craneId},${c.loadId})`).join(' '));
-check('탱크→타워 조합은 후보에서 제외 (정격)', !r.candidates.some((c) => c.craneId === 1 && c.loadId === 'tank-1'));
-check('후보에 예상 사이클타임 포함', r.candidates.every((c) => c.est > 30 && c.est < 400));
+// 직접 2개 + 재배치 1개(크롤러가 이동하면 duct-1도 가능) = 3개
+check('후보 = 직접 2 + 재배치 1', r.candidates.length === 3,
+  r.candidates.map((c) => `(${c.craneId},${c.loadId}${c.setupPos ? ',reloc' : ''})`).join(' '));
+check('탱크→타워 조합은 후보에서 제외 (정격 — 고정식은 재배치 불가)',
+  !r.candidates.some((c) => c.craneId === 1 && c.loadId === 'tank-1'));
+check('직접 후보: est 30~400s·reloc=0',
+  r.candidates.filter((c) => !c.setupPos).every((c) => c.est > 30 && c.est < 400 && c.reloc === 0));
+check('재배치 후보: setupPos 동반·est에 재배치 시간 포함',
+  r.candidates.filter((c) => c.setupPos).every((c) => c.reloc > 0 && c.est > c.reloc));
 check('관측 벡터 유한', r.observation.every(Number.isFinite));
 
 // --- 2) 그리디 정책 완주 ---
@@ -78,6 +83,52 @@ r = envDag.step(0);
 check('col 안착 후 beam이 후보로', !r.done && r.candidates.length === 1 && r.candidates[0].loadId === 'beam');
 r = envDag.step(0);
 check('DAG 순서로 전건 완료', r.done && r.info.status === 'success' && r.info.placed === 2);
+
+// --- 4.5) 재배치 후보: 도달 밖 부재도 셋업 이동으로 완주 (P8 전제 — S8/S9 stuck 결함 회귀) ---
+console.log('--- 재배치 후보 ---');
+const FAR = {
+  cranes: [{
+    ...CRAWLER_100T,
+    planning: { movable: true, travelSpeed: 1.5, setupTime: 120, teardownTime: 60 },
+  }],
+  loads: [
+    { id: 'far-1', name: '원거리 부재', size: [3, 1, 2], mass: 6, pos: [80, 0, 0], target: [70, 15] },
+  ],
+};
+const envFar = new PlanEnvironment(FAR);
+r = envFar.reset();
+check('도달 밖 부재 → 재배치 후보 1개 (이전엔 즉시 stuck)',
+  r.done === false && r.candidates.length === 1 && Array.isArray(r.candidates[0].setupPos));
+check('재배치 est = 이동·조립 + 양중', r.candidates[0].reloc >= 120 && r.candidates[0].est > r.candidates[0].reloc + 30,
+  `reloc=${r.candidates[0].reloc.toFixed(0)}s est=${r.candidates[0].est.toFixed(0)}s`);
+r = envFar.step(0);
+const farBase = envFar.sim.world.cranes[0].basePos;
+check('재배치 후 완주 (success)', r.done === true && r.info.status === 'success');
+check('basePos 실제 이동', Math.hypot(farBase[0], farBase[2]) > 30, `(${farBase[0].toFixed(1)},${farBase[2].toFixed(1)})`);
+check('makespan에 주행·셋업 반영', r.info.makespan > 120, `${r.info.makespan.toFixed(1)}s`);
+const envFar2 = new PlanEnvironment(FAR);
+const f2 = (() => { let rr = envFar2.reset(); rr = envFar2.step(0); return rr; })();
+check('재배치 결정론', f2.info.makespan === r.info.makespan);
+
+// --- 4.6) S8/S9 완주: 재배치+작업원 순차화+유휴 퇴피로 대형 시나리오 전건 완료 (수 초 소요) ---
+console.log('--- S8/S9 완주 ---');
+const env8 = new PlanEnvironment(byId('macro-plan'));
+const s8a = greedyRun(env8);
+const w8 = env8.sim.world;
+console.log(`  [S8 그리디] ${s8a.status} makespan=${(s8a.makespan / 60).toFixed(1)}min decisions=${s8a.decisions} clash=${w8.craneClashCount} col=${w8.collisionCount}`);
+check('S8: 12건 전부 완료 (이전엔 2건 후 stuck)', s8a.status === 'success' && s8a.placed === 12);
+check('S8: makespan 30~80분 범위', s8a.makespan > 1800 && s8a.makespan < 4800, `${(s8a.makespan / 60).toFixed(1)}min`);
+check('S8: 안전 — 충돌 0·crane 접촉 ≤1(잔여 스침 1건은 알려진 한계)',
+  w8.collisionCount === 0 && w8.violationCount === 0 && w8.craneClashCount <= 1);
+const s8b = greedyRun(new PlanEnvironment(byId('macro-plan')));
+check('S8: 결정론 (재배치·순차화 포함)', s8a.makespan === s8b.makespan && s8a.decisions === s8b.decisions);
+const env9full = new PlanEnvironment(byId('yard-erection'));
+const s9 = greedyRun(env9full);
+const w9 = env9full.sim.world;
+console.log(`  [S9 그리디] ${s9.status} makespan=${(s9.makespan / 60).toFixed(1)}min decisions=${s9.decisions} clash=${w9.craneClashCount} col=${w9.collisionCount}`);
+check('S9: 하역 11 + 건립 11 = 22결정, 11부재 건립 완료', s9.status === 'success' && s9.placed === 11 && s9.decisions === 22);
+check('S9: crane 간 접촉 0 (유휴 퇴피 이동 회귀)', w9.craneClashCount === 0);
+check('S9: 부재-구조물 스침 ≤3 (AutoPilot 하강 경로 — 알려진 한계)', w9.collisionCount <= 3);
 
 // --- 5) 오류 처리 + 결정론 ---
 let threw = false;

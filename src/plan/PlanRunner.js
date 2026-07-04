@@ -28,7 +28,7 @@
 
 import { FIXED_DT } from '../sim/Simulation.js';
 import { AutoPilot, checkLiftFeasible } from './AutoPilot.js';
-import { shortestPath } from './PathPlanner.js';
+import { shortestPath, pointInZone } from './PathPlanner.js';
 
 const ZERO = { slew: 0, luff: 0, hoist: 0 };
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -55,7 +55,7 @@ const DEFAULTS = {
   },
 };
 
-const bodyRadiusOf = (crane) => {
+export const bodyRadiusOf = (crane) => {
   const g = crane.spec.geometry;
   return g.bodyRadius ?? Math.max(g.bodyWidth ?? 2, g.bodyLength ?? 2) / 2;
 };
@@ -123,10 +123,13 @@ export class PlanRunner {
     return { needsMove, needsBoom, moveDist };
   }
 
-  /** 주행 경로 계획용 평면 금지영역: 금지구역 + 장애물 + 다른 크레인 현재 위치 */
+  /** 주행 경로 계획용 평면 금지영역: 금지구역 + 장애물 + 트럭 베이 + 다른 크레인 현재 위치 */
   #travelZones(ci) {
     const zones = [];
     for (const z of this.sim.world.noFlyZones) zones.push({ id: z.id, min: z.min, max: z.max });
+    for (const tr of this.sim.world.trucks) {
+      if (tr.phase !== 'gone') zones.push(tr.dockZone(0.5)); // 출차 전까지 베이 회피
+    }
     for (const ob of this.sim.world.obstacles) {
       zones.push({
         id: `obstacle:${ob.id}`,
@@ -136,7 +139,9 @@ export class PlanRunner {
     }
     this.sim.world.cranes.forEach((other, cj) => {
       if (cj === ci) return;
-      const r = bodyRadiusOf(other) + 0.5;
+      // 회피 반경은 주행 차단(#travelBlocked) 임계값 이상이어야 함 —
+      // 아니면 "합법 경로"가 차단 반경 안을 지나 상대가 서 있는 동안 영구 정지한다.
+      const r = bodyRadiusOf(other) + this.opts.bodyClearance + 0.2;
       zones.push({
         id: `crane:${cj}`,
         min: [other.basePos[0] - r, other.basePos[2] - r],
@@ -194,6 +199,8 @@ export class PlanRunner {
       // 퇴피 이동은 재조립 불필요 (작업 위치가 아님)
       setupTime: action.loadId ? (planning.setupTime ?? (crane.spec.type === 'tower' ? 0 : 600)) : 0,
       travelSpeed: Math.max(0.01, planning.travelSpeed ?? 1.5),
+      travelAccel: Math.max(0.01, planning.travelAccel ?? 0.3), // 종방향 가감속 (트럭과 동일 원칙)
+      travelVel: 0, // 현재 주행 속도 (램프 적분)
     };
     this.#event('relocateStart', ci, action.loadId, {
       from: [crane.basePos[0], crane.basePos[2]],
@@ -266,16 +273,89 @@ export class PlanRunner {
   }
 
   /** 주행 일시정지 판정: 다른 크레인 본체와 근접 */
-  #travelBlocked(ci) {
+  /**
+   * 주행 접근 차단 판정: 제안 위치(nx,nz)가 타 크레인 차단 반경 안이면서
+   * 현재보다 가까워지는 경우만 차단한다 — 이탈(멀어지는) 이동은 허용.
+   * 위치 기준으로 전부 막으면 경계에 걸친 크레인이 빠져나오지도 못하고 영구 동결된다.
+   */
+  #travelStepBlocked(ci, nx, nz) {
     const me = this.sim.world.cranes[ci];
     const rMe = bodyRadiusOf(me);
     for (let cj = 0; cj < this.sim.world.cranes.length; cj++) {
       if (cj === ci) continue;
       const other = this.sim.world.cranes[cj];
-      const d = Math.hypot(me.basePos[0] - other.basePos[0], me.basePos[2] - other.basePos[2]);
-      if (d < rMe + bodyRadiusOf(other) + this.opts.bodyClearance) return true;
+      const th = rMe + bodyRadiusOf(other) + this.opts.bodyClearance;
+      const dNew = Math.hypot(nx - other.basePos[0], nz - other.basePos[2]);
+      if (dNew >= th) continue;
+      const dCur = Math.hypot(
+        me.basePos[0] - other.basePos[0],
+        me.basePos[2] - other.basePos[2],
+      );
+      if (dNew < dCur - 1e-9) return true;
     }
     return false;
+  }
+
+  /**
+   * 이탈 방향: 차단 반경+여유 안의 가장 가까운 크레인 반대 방향 단위벡터.
+   * 충분히 멀면 null (재계획 가능 상태).
+   */
+  #escapeDir(ci) {
+    const me = this.sim.world.cranes[ci];
+    const rMe = bodyRadiusOf(me);
+    let worst = null;
+    let worstGap = Infinity;
+    for (let cj = 0; cj < this.sim.world.cranes.length; cj++) {
+      if (cj === ci) continue;
+      const other = this.sim.world.cranes[cj];
+      const th = rMe + bodyRadiusOf(other) + this.opts.bodyClearance + 0.5;
+      const d = Math.hypot(me.basePos[0] - other.basePos[0], me.basePos[2] - other.basePos[2]);
+      if (d < th && d - th < worstGap) {
+        worstGap = d - th;
+        worst = other;
+      }
+    }
+    if (!worst) return null;
+    const dx = me.basePos[0] - worst.basePos[0];
+    const dz = me.basePos[2] - worst.basePos[2];
+    const d = Math.hypot(dx, dz) || 1;
+    return [dx / d, dz / d];
+  }
+
+  /**
+   * 클리핑된 이동: 목표 지점이 금지구역·장애물·트럭·현장 경계를 침범하지 않을 때만
+   * 이동을 적용한다 (이탈·후퇴 이동이 경로계획을 거치지 않으므로 여기서 검사).
+   * @returns {boolean} 이동 적용 여부
+   */
+  #moveClear(ci, dir, dist) {
+    const crane = this.sim.world.cranes[ci];
+    const nx = crane.basePos[0] + dir[0] * dist;
+    const nz = crane.basePos[2] + dir[1] * dist;
+    const rMe = bodyRadiusOf(crane);
+    const zones = [];
+    for (const z of this.sim.world.noFlyZones) zones.push(z);
+    for (const ob of this.sim.world.obstacles) {
+      zones.push({
+        min: [ob.pos[0] - ob.size[0] / 2, ob.pos[2] - ob.size[2] / 2],
+        max: [ob.pos[0] + ob.size[0] / 2, ob.pos[2] + ob.size[2] / 2],
+      });
+    }
+    for (const tr of this.sim.world.trucks) {
+      if (tr.phase !== 'gone') zones.push(tr.dockZone(0.5));
+    }
+    if (zones.some((z) => pointInZone([nx, nz], z, rMe))) return false;
+    const site = this.sim.scenario?.site;
+    if (site) {
+      const minX = site.minX ?? -((site.width ?? 1e9) / 2);
+      const maxX = site.maxX ?? minX + (site.width ?? 1e9);
+      const minZ = site.minZ ?? -((site.depth ?? 1e9) / 2);
+      const maxZ = site.maxZ ?? minZ + (site.depth ?? 1e9);
+      if (nx < minX + rMe || nx > maxX - rMe || nz < minZ + rMe || nz > maxZ - rMe) return false;
+    }
+    crane.basePos[0] = nx;
+    crane.basePos[2] = nz;
+    this.stats[ci].travelDist += dist;
+    return true;
   }
 
   /** 재배치 상태기계 1스텝. 명령이 필요한 phase(park)는 명령을 반환 */
@@ -314,29 +394,76 @@ export class PlanRunner {
           if (r.setupTime > 0) this.#event('setupStart', ci, r.action.loadId);
           return ZERO;
         }
-        if (this.waiting[ci] || this.#travelBlocked(ci)) {
-          this.stats[ci].waitSteps += 1;
+        if (this.waiting[ci]) {
+          // 간섭 양보 중에도 주행 크레인은 서 있지 않고 상대에서 물러난다.
+          // 작업 크레인 옆 최근접점에서 정지하면 근접이 영구화되어 상호 동결(라이브락).
+          r.travelVel = 0;
+          const from = this._waitFrom?.[ci] ?? -1;
+          if (from >= 0) {
+            const other = this.sim.world.cranes[from];
+            const dx = crane.basePos[0] - other.basePos[0];
+            const dz = crane.basePos[2] - other.basePos[2];
+            const d = Math.hypot(dx, dz) || 1;
+            if (this.#moveClear(ci, [dx / d, dz / d], r.travelSpeed * FIXED_DT)) {
+              this.stats[ci].travelSteps += 1;
+            } else {
+              this.stats[ci].waitSteps += 1; // 후퇴 방향이 막힘 — 제자리 대기
+            }
+          } else {
+            this.stats[ci].waitSteps += 1;
+          }
           return ZERO;
         }
-        let remain = r.travelSpeed * FIXED_DT;
+        // 가감속 램프: 정지→가속, 잔여 경로 기준 감속 (트럭과 동일 원칙 — 결정론)
+        let remDist = 0;
+        let prevPt = [crane.basePos[0], crane.basePos[2]];
+        for (let s = r.seg; s < r.path.length; s++) {
+          remDist += Math.hypot(r.path[s][0] - prevPt[0], r.path[s][1] - prevPt[1]);
+          prevPt = r.path[s];
+        }
+        const vAllow = Math.min(r.travelSpeed, Math.sqrt(2 * r.travelAccel * Math.max(0, remDist)));
+        r.travelVel = Math.min(r.travelVel + r.travelAccel * FIXED_DT, vAllow);
+        let remain = r.travelVel * FIXED_DT;
         this.stats[ci].travelSteps += 1;
         while (remain > 1e-9 && r.seg < r.path.length) {
           const [tx, tz] = r.path[r.seg];
           const dx = tx - crane.basePos[0];
           const dz = tz - crane.basePos[2];
           const d = Math.hypot(dx, dz);
-          if (d <= remain) {
-            crane.basePos[0] = tx;
-            crane.basePos[2] = tz;
-            this.stats[ci].travelDist += d;
-            remain -= d;
-            r.seg += 1;
-          } else {
-            crane.basePos[0] += (dx / d) * remain;
-            crane.basePos[2] += (dz / d) * remain;
-            this.stats[ci].travelDist += remain;
+          const step = Math.min(d, remain);
+          const nx = crane.basePos[0] + (dx / d) * step;
+          const nz = crane.basePos[2] + (dz / d) * step;
+          if (d > 1e-9 && this.#travelStepBlocked(ci, nx, nz)) {
+            // 경로가 타 크레인에 접근 차단됨 (출발 시점 경로가 낡았거나 경계에 걸림).
+            // 1) 위협에서 물러나 여유 확보 → 2) 현재 위치에서 경로 재계획.
+            r.travelVel = 0;
+            const esc = this.#escapeDir(ci);
+            if (esc) {
+              this.#moveClear(ci, esc, r.travelSpeed * FIXED_DT);
+            } else {
+              const dest = r.action.moveTo ?? r.action.setupPos;
+              const path = shortestPath(
+                [crane.basePos[0], crane.basePos[2]],
+                dest,
+                this.#travelZones(ci),
+                { clearance: bodyRadiusOf(crane) },
+              );
+              if (path.ok) {
+                r.path = path.path;
+                r.seg = 1;
+                this.#event('travelReplan', ci, r.action.loadId, { distance: path.distance });
+              } else {
+                this.stats[ci].waitSteps += 1; // 재계획 불가 — 상대가 비킬 때까지 대기
+              }
+            }
             remain = 0;
+            break;
           }
+          crane.basePos[0] = nx;
+          crane.basePos[2] = nz;
+          this.stats[ci].travelDist += step;
+          remain -= step;
+          if (step === d) r.seg += 1;
         }
         if (r.seg >= r.path.length) {
           r.phase = 'setup';
@@ -371,6 +498,43 @@ export class PlanRunner {
         this.reloc[ci] = null;
         return ZERO;
     }
+  }
+
+  /**
+   * 능동 퇴피 명령: 정지 대신 붐 올림 + 선회로 이격 확보.
+   *  - 붐 이격: 붐을 상대 반대 방위로 (away 선회)
+   *  - 테일 접촉: 테일은 붐 반대편에 있으므로 away 선회는 역효과 —
+   *    테일↔위협점 거리의 기울기(∂dist/∂θ) 방향으로 선회해 테일을 빼낸다.
+   */
+  #evadeCommand(ci) {
+    const me = this.sim.world.cranes[ci];
+    const other = this.sim.world.cranes[this._evadeFrom[ci]];
+    let slew;
+    if (this._evadeTail[ci]) {
+      const R = me.spec.geometry.tailSwingRadius ?? 4.5;
+      const Ro = other.spec.geometry.tailSwingRadius ??
+        (other.spec.geometry.counterJibLength ?? 4.5);
+      const th = me.slewAngle;
+      const tail = [me.basePos[0] - R * Math.cos(th), me.basePos[2] - R * Math.sin(th)];
+      const oTail = [
+        other.basePos[0] - Ro * Math.cos(other.slewAngle),
+        other.basePos[2] - Ro * Math.sin(other.slewAngle),
+      ];
+      const oBody = [other.basePos[0], other.basePos[2]];
+      const d2 = (p) => (tail[0] - p[0]) ** 2 + (tail[1] - p[1]) ** 2;
+      const P = d2(oTail) < d2(oBody) ? oTail : oBody; // 가까운 위협점
+      // ∂tail/∂θ = R(sinθ, -cosθ) → 거리 증가 방향으로 선회
+      const grad =
+        (tail[0] - P[0]) * R * Math.sin(th) - (tail[1] - P[1]) * R * Math.cos(th);
+      slew = grad >= 0 ? 1 : -1;
+    } else {
+      const away = Math.atan2(
+        me.basePos[2] - other.basePos[2],
+        me.basePos[0] - other.basePos[0],
+      );
+      slew = clamp(wrapAngle(away - me.slewAngle) * 3, -1, 1);
+    }
+    return { slew, luff: -1, hoist: 0 };
   }
 
   /** 고정스텝 1회 진행 */
@@ -408,6 +572,7 @@ export class PlanRunner {
     this._evade = new Array(n).fill(false);
     this._evadeFrom = new Array(n).fill(-1);
     this._evadeTail = new Array(n).fill(false);
+    this._waitFrom = new Array(n).fill(-1); // 양보 유발 상대 (주행 크레인의 후퇴 방향)
     if (this.opts.yield) {
       if (this.opts.minSeparation != null) {
         for (let a = 0; a < n; a++) {
@@ -423,15 +588,17 @@ export class PlanRunner {
           }
         }
       }
-      // 간섭 판정 대상: 활성 조종 중 · 파킹 중(붐이 아직 지나가는 중) · 재배치 중(본체 이동 중)
-      const involved = (ci) => this.active[ci] !== null || parking[ci] || this.reloc[ci] !== null;
+      // 간섭 판정: 붐은 파킹 후에도 물리적으로 존재 — 모든 쌍을 검사한다.
+      // (유휴 크레인을 제외하면 작업 붐이 유휴 붐 옆을 무경고로 스쳐 clash가 난다)
       // 양보 가능 대상: 조종 중(퇴피 가능) 또는 주행 중(일시정지 가능)
       const yieldable = (ci) =>
         this.active[ci] !== null || this.reloc[ci]?.phase === 'travel';
+      // 유휴 크레인은 자유로우므로 최우선 양보 대상 — 붐을 상대 반대편으로 돌려 비켜준다
+      const idleFree = (ci) =>
+        !this.active[ci] && !this.reloc[ci] && !this.stopped[ci];
       const warn = this.opts.warnClearance;
       const near = warn * this.opts.approachFactor;
       for (const p of state.safety?.cranePairs ?? []) {
-        if (!involved(p.a) || !involved(p.b)) continue;
         const key = p.a * 1000 + p.b;
         const prev = this._prevPairDist.get(key);
         this._prevPairDist.set(key, p.boomDist);
@@ -446,25 +613,33 @@ export class PlanRunner {
           this._pairWait.delete(key);
           continue;
         }
-        const target = yieldable(p.b) ? p.b : yieldable(p.a) ? p.a : null;
+        // 유휴 크레인 우선 양보 (작업을 멈추지 않고 유휴 붐이 비켜준다)
+        const target = idleFree(p.b) ? p.b : idleFree(p.a) ? p.a
+          : yieldable(p.b) ? p.b : yieldable(p.a) ? p.a : null;
         if (target !== null) {
           this._pairWait.add(key);
           nextWaiting[target] = true;
           waitCause[target] ??= p.tailContact ? 'tailSwing' : 'boomClearance';
+          this._waitFrom[target] = target === p.b ? p.a : p.b;
           // 능동 퇴피: 경고 이격 미만이면 양보 크레인이 공간을 낸다
           // (붐 올림 + 상대 반대편으로 선회 — 테일스윙은 선회로만 풀린다)
-          if (p.boomDist < warn || p.tailContact) {
+          // 유휴 크레인은 위험 판정 즉시 조기 퇴피 — 잃을 작업이 없고,
+          // 늦게 시작하면 접근 중인 작업 붐과 한 번 스치고(clash) 나서야 풀린다
+          if (p.boomDist < warn || p.tailContact || idleFree(target)) {
             this._evade[target] = true;
             this._evadeFrom[target] = target === p.b ? p.a : p.b;
             this._evadeTail[target] = p.tailContact;
           }
           // 초근접 + 접근 중: 진행 크레인도 정지 (퇴피가 이격을 회복할 때까지).
           // 이격이 회복 중이면 진행을 허용 — 양쪽 동결로 인한 라이브락 방지.
-          if ((p.boomDist < this.opts.holdClearance && closing) || p.tailContact) {
+          // 양보 대상이 유휴 크레인이면 동결 생략: 유휴 퇴피가 곧 해소하며,
+          // 매 스텝 동결/해제 thrash가 작업을 절반 속도로 만들어 양중 타임아웃을 유발한다.
+          if ((p.boomDist < this.opts.holdClearance && closing && !idleFree(target)) || p.tailContact) {
             const other = target === p.b ? p.a : p.b;
             if (yieldable(other)) {
               nextWaiting[other] = true;
               waitCause[other] ??= 'holdClearance';
+              this._waitFrom[other] = target;
             }
           }
         }
@@ -489,44 +664,16 @@ export class PlanRunner {
       }
       const pilot = this.active[ci];
       if (!pilot) {
-        if (parkCmds[ci]) cmds[ci] = parkCmds[ci]; // 유휴 파킹
+        // 유휴 크레인이 간섭 양보 대상이면 붐을 상대 반대편으로 돌려 비켜준다
+        // (실제 현장 관행 — 작업 크레인은 멈추지 않는다)
+        if (this._evade[ci] && this._evadeFrom[ci] >= 0) cmds[ci] = this.#evadeCommand(ci);
+        else if (parkCmds[ci]) cmds[ci] = parkCmds[ci]; // 유휴 파킹
         continue;
       }
       if (this.waiting[ci]) {
         this.stats[ci].waitSteps += 1;
-        // 능동 퇴피: 정지 대신 붐 올림 + 선회로 이격 확보.
-        //  - 붐 이격: 붐을 상대 반대 방위로 (away 선회)
-        //  - 테일 접촉: 테일은 붐 반대편에 있으므로 away 선회는 역효과 —
-        //    테일↔위협점 거리의 기울기(∂dist/∂θ) 방향으로 선회해 테일을 빼낸다.
         if (this._evade[ci] && this._evadeFrom[ci] >= 0) {
-          const me = this.sim.world.cranes[ci];
-          const other = this.sim.world.cranes[this._evadeFrom[ci]];
-          let slew;
-          if (this._evadeTail[ci]) {
-            const R = me.spec.geometry.tailSwingRadius ?? 4.5;
-            const Ro = other.spec.geometry.tailSwingRadius ??
-              (other.spec.geometry.counterJibLength ?? 4.5);
-            const th = me.slewAngle;
-            const tail = [me.basePos[0] - R * Math.cos(th), me.basePos[2] - R * Math.sin(th)];
-            const oTail = [
-              other.basePos[0] - Ro * Math.cos(other.slewAngle),
-              other.basePos[2] - Ro * Math.sin(other.slewAngle),
-            ];
-            const oBody = [other.basePos[0], other.basePos[2]];
-            const d2 = (p) => (tail[0] - p[0]) ** 2 + (tail[1] - p[1]) ** 2;
-            const P = d2(oTail) < d2(oBody) ? oTail : oBody; // 가까운 위협점
-            // ∂tail/∂θ = R(sinθ, -cosθ) → 거리 증가 방향으로 선회
-            const grad =
-              (tail[0] - P[0]) * R * Math.sin(th) - (tail[1] - P[1]) * R * Math.cos(th);
-            slew = grad >= 0 ? 1 : -1;
-          } else {
-            const away = Math.atan2(
-              me.basePos[2] - other.basePos[2],
-              me.basePos[0] - other.basePos[0],
-            );
-            slew = clamp(wrapAngle(away - me.slewAngle) * 3, -1, 1);
-          }
-          cmds[ci] = { slew, luff: -1, hoist: 0 };
+          cmds[ci] = this.#evadeCommand(ci);
         }
         continue;
       }
@@ -562,6 +709,22 @@ export class PlanRunner {
         // 실행 중 실패(타임아웃·줄걸이 실패 등) — 상태가 어정쩡할 수 있어 해당 크레인 정지
         this.stats[ci].failed += 1;
         this.stopped[ci] = true;
+        // 비상 안착: 매달린 부재를 현 위치 지면에 내려놓는다 — 영구 hooked(좀비)로 남으면
+        // 어떤 크레인도 재인양할 수 없어 에피소드 전체가 막힌다
+        const held = this.sim.world.loads.find(
+          (l) => l.hookedBy === ci &&
+            (l.state === 'hooked' || l.state === 'rigging' || l.state === 'derigging'),
+        );
+        if (held) {
+          held.state = 'ground';
+          held.hookedBy = null;
+          held.timer = 0;
+          held.pos[1] = held.size[1] / 2;
+          const crane = this.sim.world.cranes[ci];
+          crane.loadMass = 0;
+          crane.minHookY = 0;
+          this.#event('emergencySetDown', ci, held.id, { pos: [held.pos[0], held.pos[2]] });
+        }
         this.#event('liftFailed', ci, pilot.loadId, { reason: pilot.reason, infeasible: false });
       }
       this.active[ci] = null;
