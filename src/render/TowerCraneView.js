@@ -1,6 +1,10 @@
 // 3층: 렌더 — 타워크레인 3D 뷰.
 // 코어의 CraneState를 받아 자세만 반영한다. 상태를 절대 변경하지 않는다.
+//
+// P7.9: 격자 마스트·삼각 단면 지브 트러스(절차 생성), 카운터지브 발라스트 판,
+// 트롤리 시브·멀티폴 로프, 항공 장애등(시뮬 시간 결정론 점멸).
 import * as THREE from 'three';
+import { latticeMesh, hookBlockGroup, ropeSegment, stretchBetween } from './parts.js';
 
 const MAT = {
   mast: new THREE.MeshStandardMaterial({ color: 0xd9a11a, roughness: 0.55, metalness: 0.15 }),
@@ -12,6 +16,7 @@ const MAT = {
   rope: new THREE.MeshStandardMaterial({ color: 0x1d1f22, roughness: 0.6 }),
   hook: new THREE.MeshStandardMaterial({ color: 0x18191b, roughness: 0.4, metalness: 0.5 }),
   base: new THREE.MeshStandardMaterial({ color: 0x8a8f96, roughness: 0.9 }),
+  beacon: new THREE.MeshBasicMaterial({ color: 0xff2a1a }),
 };
 
 function box(w, h, d, mat) {
@@ -29,32 +34,38 @@ export class TowerCraneView {
 
     this.root = new THREE.Group();
 
-    // --- 기초 블록 ---
+    // --- 기초 블록 + 앵커 ---
     const base = box(4, 1.2, 4, MAT.base);
     base.position.y = 0.6;
     this.root.add(base);
-
-    // --- 마스트: 격자 느낌으로 세그먼트 분할 ---
-    const mastW = 1.6;
-    const segH = 4;
-    const nSeg = Math.ceil(g.mastHeight / segH);
-    for (let i = 0; i < nSeg; i++) {
-      const seg = box(mastW, segH - 0.25, mastW, MAT.mast);
-      seg.position.y = 1.2 + i * segH + segH / 2;
-      this.root.add(seg);
+    for (const [dx, dz] of [[-1.6, -1.6], [-1.6, 1.6], [1.6, -1.6], [1.6, 1.6]]) {
+      const anchor = box(0.5, 0.35, 0.5, MAT.counter);
+      anchor.position.set(dx, 1.35, dz);
+      this.root.add(anchor);
     }
+
+    // --- 마스트: 격자 트러스 (수직) ---
+    const mastLen = g.mastHeight - 1.2;
+    const mast = latticeMesh(
+      { length: mastLen, width: 1.5, bays: Math.max(4, Math.round(mastLen / 2.2)), chordRadius: 0.07 },
+      MAT.mast,
+    );
+    mast.rotation.z = Math.PI / 2; // +x 방향 트러스를 +y로 세움
+    mast.position.y = 1.2;
+    this.root.add(mast);
 
     // --- 상부 (선회부): 지브 + 카운터지브 + 운전실 ---
     this.upper = new THREE.Group();
     this.upper.position.y = g.mastHeight;
     this.root.add(this.upper);
 
-    // 턴테이블·타워헤드
+    // 턴테이블·타워헤드(에이펙스 격자)
     const head = box(1.8, 1.2, 1.8, MAT.mast);
     head.position.y = 0.6;
     this.upper.add(head);
-    const apex = box(0.9, 5, 0.9, MAT.mast);
-    apex.position.y = 3.5;
+    const apex = latticeMesh({ length: 5, width: 0.8, bays: 4, chordRadius: 0.05 }, MAT.mast);
+    apex.rotation.z = Math.PI / 2;
+    apex.position.y = 1.2;
     this.upper.add(apex);
 
     // 운전실
@@ -65,65 +76,81 @@ export class TowerCraneView {
     glass.position.set(1.7, 1.4, 1.3);
     this.upper.add(glass);
 
-    // 지브 (+x)
-    const jib = box(g.jibLength, 0.8, 0.8, MAT.jib);
-    jib.position.set(g.jibLength / 2, 1.4, 0);
+    // 지브 (+x): 삼각 단면 트러스 (상현 1 + 하현 2)
+    const jibY = 1.35;
+    const jib = latticeMesh(
+      {
+        length: g.jibLength,
+        width: 0.95,
+        height: 1.05,
+        section: 'triangle',
+        bays: Math.max(6, Math.round(g.jibLength / 1.6)),
+        chordRadius: 0.055,
+      },
+      MAT.jib,
+    );
+    jib.position.set(0, jibY, 0);
     this.upper.add(jib);
 
-    // 카운터지브 (-x) + 카운터웨이트
+    // 카운터지브 (-x): 플랫폼 + 발라스트 판 + 난간
     const cjLen = g.counterJibLength ?? g.jibLength * 0.3;
-    const cjib = box(cjLen, 0.7, 1.6, MAT.jib);
-    cjib.position.set(-cjLen / 2, 1.4, 0);
+    const cjib = box(cjLen, 0.35, 1.8, MAT.jib);
+    cjib.position.set(-cjLen / 2, jibY, 0);
     this.upper.add(cjib);
-    const cw = box(1.6, 1.6, 2.2, MAT.counter);
-    cw.position.set(-cjLen + 0.8, 0.8, 0);
-    this.upper.add(cw);
+    for (let i = 0; i < 3; i++) {
+      const plate = box(0.45, 1.6, 2.2, MAT.counter);
+      plate.position.set(-cjLen + 0.7 + i * 0.55, jibY - 1.0, 0);
+      this.upper.add(plate);
+    }
+    for (const dz of [-0.85, 0.85]) {
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(cjLen - 0.5, 0.05, 0.05), MAT.cab);
+      rail.position.set(-cjLen / 2, jibY + 0.75, dz);
+      this.upper.add(rail);
+    }
 
-    // 타이바 (apex → 지브/카운터지브, 렌더 전용 간단 표현)
-    const tie1 = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1, 6), MAT.rope);
-    this.#stretch(tie1, [0, 6, 0], [g.jibLength * 0.6, 1.8, 0]);
+    // 타이바 (apex → 지브/카운터지브)
+    const tie1 = ropeSegment(MAT.rope, 0.045);
+    stretchBetween(tie1, [0, 6.0, 0], [g.jibLength * 0.6, jibY + 0.55, 0]);
     this.upper.add(tie1);
-    const tie2 = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1, 6), MAT.rope);
-    this.#stretch(tie2, [0, 6, 0], [-cjLen * 0.8, 1.8, 0]);
+    const tie2 = ropeSegment(MAT.rope, 0.045);
+    stretchBetween(tie2, [0, 6.0, 0], [-cjLen + 0.7, jibY + 0.35, 0]);
     this.upper.add(tie2);
 
-    // 트롤리 (지브를 따라 이동)
-    this.trolley = box(1.2, 0.5, 1.2, MAT.trolley);
+    // 항공 장애등 (에이펙스 상단, 시뮬 시간 결정론 점멸)
+    this.beacon = new THREE.Mesh(new THREE.SphereGeometry(0.14, 8, 8), MAT.beacon);
+    this.beacon.position.y = 6.4;
+    this.upper.add(this.beacon);
+
+    // 트롤리 (지브 하현을 따라 이동) + 시브
+    this.trolley = new THREE.Group();
     this.trolley.position.y = 0.9;
+    const tBody = box(1.1, 0.4, 1.2, MAT.trolley);
+    this.trolley.add(tBody);
+    for (const dz of [-0.3, 0.3]) {
+      const sheave = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 0.07, 12), MAT.hook);
+      sheave.rotation.x = Math.PI / 2;
+      sheave.position.set(0, -0.28, dz);
+      this.trolley.add(sheave);
+    }
     this.upper.add(this.trolley);
 
-    // --- 로프 + 후크 (root의 로컬 좌표로 배치) ---
-    this.ropeMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1, 6), MAT.rope);
-    this.ropeMesh.castShadow = true;
-    this.root.add(this.ropeMesh);
-
-    this.hookMesh = new THREE.Group();
-    const block = box(0.5, 0.8, 0.35, MAT.hook);
-    block.position.y = -0.4;
-    this.hookMesh.add(block);
-    const hookTip = new THREE.Mesh(
-      new THREE.TorusGeometry(0.25, 0.08, 8, 16, Math.PI * 1.5),
-      MAT.hook,
-    );
-    hookTip.position.y = -1.0;
-    hookTip.castShadow = true;
-    this.hookMesh.add(hookTip);
+    // --- 권상 로프 (멀티폴) + 후크블록 (root의 로컬 좌표로 배치) ---
+    const falls = Math.max(1, Math.min(spec.geometry.hoistFalls ?? 2, 4));
+    this.ropeFalls = [];
+    for (let i = 0; i < falls; i++) {
+      const r = ropeSegment(MAT.rope, 0.028);
+      this.root.add(r);
+      this.ropeFalls.push(r);
+    }
+    this.hookMesh = hookBlockGroup({ blockMat: MAT.hook, hookMat: MAT.hook });
     this.root.add(this.hookMesh);
   }
 
-  /** 두 로컬 점 사이에 원기둥을 늘여 배치 (타이바용) */
-  #stretch(mesh, from, to) {
-    const a = new THREE.Vector3(...from);
-    const b = new THREE.Vector3(...to);
-    const mid = a.clone().add(b).multiplyScalar(0.5);
-    const dir = b.clone().sub(a);
-    mesh.scale.y = dir.length();
-    mesh.position.copy(mid);
-    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
-  }
-
-  /** @param {import('../core/Crane.js').CraneState} state */
-  update(state) {
+  /**
+   * @param {import('../core/Crane.js').CraneState} state
+   * @param {number} [time] 시뮬 시간 (s) — 장애등 점멸용. 생략 시 상시 점등.
+   */
+  update(state, time) {
     const [bx, by, bz] = state.basePos;
     this.root.position.set(bx, by, bz);
 
@@ -131,26 +158,33 @@ export class TowerCraneView {
     this.upper.rotation.y = -state.slewAngle;
     this.trolley.position.x = state.extra.trolleyPos;
 
+    // 장애등: 0.8s 점등 / 0.8s 소등 (시간의 결정론 함수)
+    this.beacon.visible = time == null ? true : time % 1.6 < 0.8;
+
     // 로프: 트롤리(월드)에서 후크까지 — 흔들림 시 기울어짐
     const [hx, hy, hz] = state.hookPos;
-    const suspY = by + state.extra.mastHeight + 0.9;
+    const suspY = by + state.extra.mastHeight + 0.55;
     const sx = bx + state.extra.trolleyPos * Math.cos(state.slewAngle);
     const sz = bz + state.extra.trolleyPos * Math.sin(state.slewAngle);
 
-    // ropeMesh/hookMesh는 basePos에 놓인 root의 자식이다.
+    // ropeFalls/hookMesh는 basePos에 놓인 root의 자식이다.
     // 월드 좌표를 그대로 넣으면 basePos가 두 번 더해진다.
-    const a = new THREE.Vector3(sx - bx, suspY - by, sz - bz);
-    const b = new THREE.Vector3(hx - bx, hy - by, hz - bz);
-    const dir = b.clone().sub(a);
-    const len = Math.max(dir.length(), 0.01);
-    this.ropeMesh.scale.y = len;
-    this.ropeMesh.position.copy(a.clone().add(b).multiplyScalar(0.5));
-    this.ropeMesh.quaternion.setFromUnitVectors(
-      new THREE.Vector3(0, 1, 0),
-      dir.normalize(),
-    );
+    const suspL = [sx - bx, suspY - by, sz - bz];
+    const hookL = [hx - bx, hy - by, hz - bz];
+    const perp = [-Math.sin(state.slewAngle), 0, Math.cos(state.slewAngle)];
+    const n = this.ropeFalls.length;
+    this.ropeFalls.forEach((rope, i) => {
+      const k = n > 1 ? (i - (n - 1) / 2) : 0;
+      const spreadTop = k * 0.3;
+      const spreadHook = k * 0.09;
+      stretchBetween(
+        rope,
+        [suspL[0] + perp[0] * spreadTop, suspL[1], suspL[2] + perp[2] * spreadTop],
+        [hookL[0] + perp[0] * spreadHook, hookL[1], hookL[2] + perp[2] * spreadHook],
+      );
+    });
 
-    this.hookMesh.position.copy(b);
+    this.hookMesh.position.set(hookL[0], hookL[1], hookL[2]);
     this.hookMesh.rotation.y = -state.slewAngle;
   }
 }

@@ -49,8 +49,29 @@ longBoomView.update({
   ...mobileState,
   extra: { ...mobileState.extra, boomLength: 52 },
 });
-check('계획 붐 길이가 3D 붐 메시 길이에 반영', Math.abs(longBoomView.boomHead.position.x - 52) < 1e-9);
-check('붐 본체 스케일이 계획 길이에 맞게 변경', Math.abs(longBoomView.boomMesh.scale.x - 52 / 40) < 1e-9);
+// 격자 붐(2세그먼트 체인)에서 시각 붐끝이 피벗에서 계획 붐길이만큼 떨어져 있는지 —
+// 무하중(처짐 0)이므로 피벗→붐끝 거리 = 붐길이 (+시브 오프셋 0.25/-0.45 허용)
+{
+  longBoomView.root.updateMatrixWorld(true);
+  const tip = longBoomView.tipAnchor.getWorldPosition(longBoomView.tipAnchor.position.clone());
+  const pivot = longBoomView.boomPivot.getWorldPosition(longBoomView.boomPivot.position.clone());
+  const dist = tip.distanceTo(pivot);
+  check(`계획 붐 길이 52m가 격자 붐 시각 길이에 반영 (${dist.toFixed(2)}m)`, Math.abs(dist - 52) < 0.8);
+  check('무하중 시 붐 처짐 0 (외측 세그먼트 회전 없음)', longBoomView.boomOuter.rotation.z === 0);
+}
+// 하중률에 따른 렌더 전용 처짐 — 코어 상태(hookPos)는 그대로 그린다
+{
+  const loadedView = new MobileCraneView(mobileSpec);
+  loadedView.update({ ...mobileState, loadMass: 10, loadRatio: 0.8 });
+  check('하중 시 붐 처짐 발생 (렌더 전용)', loadedView.boomOuter.rotation.z < 0);
+  loadedView.root.updateMatrixWorld(true);
+  const hookWorld = loadedView.hookMesh.getWorldPosition(loadedView.hookMesh.position.clone());
+  check(
+    '처짐 중에도 후크는 코어 hookPos에 위치 (물리 불변)',
+    Math.abs(hookWorld.x - mobileState.hookPos[0]) < 1e-9 &&
+      Math.abs(hookWorld.y - mobileState.hookPos[1]) < 1e-9,
+  );
+}
 
 console.log('--- S9 트럭 렌더 ---');
 const s9 = SCENARIOS.find((entry) => entry.id === 'yard-erection').scenario;
