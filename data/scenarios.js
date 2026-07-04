@@ -373,6 +373,54 @@ const S11 = {
   rigging: { rigTime: 45, derigTime: 25 },
 };
 
+/**
+ * S12 — 지상 인원·장비 간섭 (P7.10 동적 장애물):
+ *   작업 인원 5명이 현장을 배회하고 지게차 1대가 순환 도로(선회 아크를 가로지름)를 돈다.
+ *   매달린 하중의 위험 반경(6m) 안에 인원·장비가 들어오면 크레인은 **작업 일시정지(홀드)**
+ *   — 신호수 규칙. 이 지연이 계획 추정에는 없는 실측 사이클 타임 증가를 만든다.
+ *   이동은 랜덤처럼 보이지만 agents.seed의 결정론 난수 — 같은 시드 = 같은 궤적
+ *   (리플레이·테스트 재현성). 시드를 바꾸면 다른 패턴이 나온다.
+ */
+const S12 = {
+  site: { width: 90, depth: 56, minX: -45, minZ: -28 },
+  cranes: [{ ...CRAWLER_100T, id: 'GC-01', name: 'Yard Crawler' }],
+  loads: [
+    {
+      id: 'HM-1',
+      name: '설비 모듈',
+      size: [3, 2, 3],
+      mass: 9,
+      shape: 'module',
+      pos: [21.2, 0, 0],
+      target: onArc(21.2, 80),
+    },
+    {
+      id: 'HB-1',
+      name: 'H형강 거더',
+      size: [8, 0.8, 0.5],
+      mass: 6,
+      shape: 'h-beam',
+      pos: [onArc(21.2, -35)[0], 0, onArc(21.2, -35)[1]],
+      target: onArc(16, 150),
+    },
+  ],
+  obstacles: [{ id: 'site-office', kind: 'office', pos: [-30, 0, -22], size: [10, 6, 8] }],
+  noFlyZones: [],
+  agents: {
+    seed: 20260705,
+    dangerRadius: 6,
+    workers: [
+      // 현장 전역 배회 — 선회 아크(반경 21m) 주변을 수시로 지나간다
+      { count: 5, area: { min: [-38, -22], max: [38, 22] }, speed: [0.8, 1.3], idle: [2, 5] },
+    ],
+    vehicles: [
+      // 순환 도로가 z=±12~14에서 선회 아크를 가로지름 — 지게차가 주기적으로 작업 경로 침범
+      { route: [[-40, 12], [40, 12], [40, -14], [-40, -14]], speed: 2.4 },
+    ],
+  },
+  rigging: { rigTime: 30, derigTime: 15 },
+};
+
 export const SCENARIOS = [
   { id: 'free', name: '자유 연습', desc: '목표 없음 — 부재 4종 자유 조작', scenario: DEFAULT_SCENARIO },
   { id: 'place-basic', name: 'S1 기본 안착', desc: '픽업 → 선회 40° → 목표 안착', scenario: S1 },
@@ -386,4 +434,5 @@ export const SCENARIOS = [
   { id: 'yard-erection', name: 'S9 트럭 하역·철골 건립', desc: '트럭 1대 전량 반입 → 야적장 하역 → 2×2 입체 철골 건립 (여정 2단계·고소 안착·전도안정성)', scenario: S9 },
   { id: 'pick-carry', name: 'S10 픽앤캐리 통로', desc: '픽업·목표 78m 이격 — 하중 매단 채 주행(감격 정격·주행 전도)으로 안착', scenario: S10 },
   { id: 'storm-rig', name: 'S11 강풍 리깅', desc: '바람 외력→흔들림·부재 요 회전·이중진자 ON — 거스트 창에서 정밀 안착', scenario: S11 },
+  { id: 'ground-traffic', name: 'S12 지상 인원·장비', desc: '인원 5명 배회 + 지게차 순환 — 위험 반경 6m 진입 시 작업 홀드(신호수 규칙), 시드 결정론', scenario: S12 },
 ];

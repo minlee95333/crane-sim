@@ -33,6 +33,13 @@ export class World {
     this.noFlyZones = [];
     /** @type {import('./Truck.js').Truck[]} 반입 트럭 (코어 엔티티) */
     this.trucks = [];
+    /** @type {import('./Agent.js').Agent[]} 지상 인원·소형 장비 (시드 결정론 이동) */
+    this.agents = [];
+    this.agentRules = { dangerRadius: 5 }; // 매달린 하중 기준 접근 금지 반경 (m)
+    this.agentHolds = new Set(); // 이번 스텝에 홀드(작업 일시정지)된 craneId
+    this.agentHoldCount = 0; // 홀드 진입 누적 (에지)
+    this.agentHoldTime = 0; // 홀드 누적 시간 (s) — makespan 영향의 직접 측정치
+    this._prevHolds = new Set();
     this.time = 0; // 시뮬레이션 경과 시간 (s)
     /** 직전 스텝의 이벤트 메시지 (HUD·로그용) */
     this.lastEvent = null;
@@ -138,6 +145,43 @@ export class World {
     this.noFlyZones.push({ id: def.id, min: [...def.min], max: [...def.max] });
   }
 
+  /** 지상 에이전트 등록 (buildAgents 산출물) */
+  addAgent(agent) {
+    this.agents.push(agent);
+  }
+
+  setAgentRules(rules) {
+    this.agentRules = { ...this.agentRules, ...rules };
+  }
+
+  /**
+   * 홀드 판정: 매달린 하중의 수평 위험 반경 안에 인원·장비가 있으면 해당 크레인은
+   * 작업 일시정지 (신호수 규칙). 에이전트는 계속 움직이므로 홀드는 스스로 풀린다.
+   */
+  #computeAgentHolds(dt) {
+    this.agentHolds.clear();
+    if (this.agents.length > 0) {
+      const R = this.agentRules.dangerRadius;
+      for (const load of this.loads) {
+        if (load.state !== 'hooked') continue;
+        for (const agent of this.agents) {
+          if (Math.hypot(load.pos[0] - agent.pos[0], load.pos[2] - agent.pos[1]) < R) {
+            this.agentHolds.add(load.hookedBy);
+            break;
+          }
+        }
+      }
+    }
+    for (const ci of this.agentHolds) {
+      if (!this._prevHolds.has(ci)) {
+        this.agentHoldCount += 1;
+        this.lastEvent = `⛔ 지상 인원·장비 접근: 작업 일시정지 (crane ${ci})`;
+      }
+    }
+    this.agentHoldTime += dt * this.agentHolds.size;
+    this._prevHolds = new Set(this.agentHolds);
+  }
+
   /** 트럭 등록 — 적재 부재의 도킹 시 위치를 스냅샷 (부재를 먼저 등록할 것) */
   addTruck(truck) {
     for (const id of truck.loadIds) {
@@ -209,12 +253,17 @@ export class World {
       }
     }
 
-    // 리깅 작업 중인 크레인은 조작 동결 (실제: 크루 작업 중 크레인 정지)
+    // 지상 에이전트 이동 (시드 결정론) → 매달린 하중 접근 시 해당 크레인 홀드
+    for (const agent of this.agents) agent.step(dt, this);
+    this.#computeAgentHolds(dt);
+
+    // 리깅 작업 중·지상 접근 홀드 크레인은 조작 동결 (실제: 신호수 정지 신호)
     // 주행(drive/steer)으로 base가 움직이면 충돌·경계 침범 시 되돌린다.
     this.cranes.forEach((crane, i) => {
       const px = crane.basePos[0];
       const pz = crane.basePos[2];
-      crane.step(dt, this.#riggingBusy(i) ? {} : (commands[i] ?? {}));
+      const frozen = this.#riggingBusy(i) || this.agentHolds.has(i);
+      crane.step(dt, frozen ? {} : (commands[i] ?? {}));
       if ((crane.basePos[0] !== px || crane.basePos[2] !== pz) && this.#baseBlocked(i)) {
         crane.basePos[0] = px;
         crane.basePos[2] = pz;
@@ -287,6 +336,15 @@ export class World {
       const ob = this.cranes[cj].basePos;
       if (Math.hypot(x - ob[0], z - ob[2]) < r + or) return true;
     }
+    // 지상 인원·장비 (스포터 정지 규칙 — 에이전트가 움직이면 곧 풀린다)
+    for (const agent of this.agents) {
+      if (agent.kind === 'vehicle') {
+        const ob = agent.obstacle();
+        if (Math.abs(x - ob.pos[0]) <= ob.size[0] / 2 + r && Math.abs(z - ob.pos[2]) <= ob.size[2] / 2 + r) return true;
+      } else if (Math.hypot(x - agent.pos[0], z - agent.pos[1]) < r + 1.0) {
+        return true;
+      }
+    }
     return false;
   }
 
@@ -341,6 +399,17 @@ export class World {
       if (!ob) continue;
       for (const { l, size } of hooked) {
         if (tr.loadIds.includes(l.id) && l.stage === 0) continue;
+        if (aabbOverlap(l.pos, size, ob)) {
+          this.collisionIds.push(ob.id);
+          break;
+        }
+      }
+    }
+    // 이동 장비(차량) 차체 = 충돌체 (인원은 홀드 규칙이 담당 — 충돌 박스 아님)
+    for (const agent of this.agents) {
+      if (agent.kind !== 'vehicle') continue;
+      const ob = agent.obstacle();
+      for (const { l, size } of hooked) {
         if (aabbOverlap(l.pos, size, ob)) {
           this.collisionIds.push(ob.id);
           break;
@@ -548,6 +617,7 @@ export class World {
       obstacles: this.obstacles.map((o) => ({ id: o.id, pos: [...o.pos], size: [...o.size] })),
       noFlyZones: this.noFlyZones.map((z) => ({ id: z.id, min: [...z.min], max: [...z.max] })),
       trucks: this.trucks.map((t) => t.snapshot(this.time)),
+      agents: this.agents.map((a) => a.snapshot()),
       wind: this.windDef
         ? {
             speed: this.windSpeed,
@@ -563,6 +633,9 @@ export class World {
         craneClashCount: this.craneClashCount,
         craneMinClearance: this.craneMinClearance,
         cranePairs: this.cranePairs.map((p) => ({ ...p })),
+        agentHolds: [...this.agentHolds],
+        agentHoldCount: this.agentHoldCount,
+        agentHoldTime: this.agentHoldTime,
       },
       lastEvent: this.lastEvent,
     };

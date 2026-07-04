@@ -9,6 +9,7 @@ import { World } from '../core/World.js';
 import { MobileCrane } from '../core/MobileCrane.js';
 import { TowerCrane } from '../core/TowerCrane.js';
 import { Truck, deriveTrucks } from '../core/Truck.js';
+import { buildAgents } from '../core/Agent.js';
 
 const FIXED_DT = 1 / 60; // 물리 스텝 (s)
 
@@ -52,6 +53,10 @@ export class Simulation {
     }
     this.world.setWind(this.scenario.wind ?? null);
     this.world.siteBounds = this.scenario.site ?? null; // 주행 이탈 방지 경계
+    // 지상 인원·장비 (scenario.agents 정의된 시나리오만 — 시드 결정론 이동)
+    const built = buildAgents(this.scenario);
+    for (const agent of built.agents) this.world.addAgent(agent);
+    this.world.setAgentRules(built.rules);
     this.accumulator = 0;
     return this.getState();
   }
