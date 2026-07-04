@@ -101,6 +101,8 @@ export class Load {
       state: this.state,
       hookedBy: this.hookedBy,
       rigRemain: this.state === 'rigging' || this.state === 'derigging' ? this.timer : 0,
+      rigTime: this.rigTime,
+      derigTime: this.derigTime,
       arriveTime: this.arriveTime,
       stageChangedAt: this.stageChangedAt,
       yardedAt: this.yardedAt,

@@ -41,6 +41,7 @@ const S3 = {
       id: 'girder-1',
       name: '철골 거더',
       size: [8, 0.8, 0.5],
+      shape: 'h-beam',
       mass: 8,
       pos: [21.2, 0, 0],
       target: onArc(21.2, 90),
@@ -69,6 +70,7 @@ const S4 = {
       id: 'pipe-1',
       name: '배관 스풀',
       size: [6, 0.6, 0.6],
+      shape: 'pipe',
       mass: 6,
       pos: [onArc(21.2, 25)[0], 0, onArc(21.2, 25)[1]],
       target: onArc(21.2, 70),
@@ -86,6 +88,7 @@ const S5 = {
       id: 'rebar-1',
       name: '철근 다발',
       size: [8, 0.5, 0.8],
+      shape: 'rebar',
       mass: 3,
       pos: [15, 0, 0], // 초기 트롤리 반경 15m, 선회 0°
       target: onArc(25, 110), // 트롤리 확장 + 선회 필요
@@ -116,6 +119,7 @@ const S6 = {
       id: 'tank-1',
       name: '중량 탱크',
       size: [4, 3, 4],
+      shape: 'tank',
       mass: 14,
       pos: [-28 + 21.2, 0, 0], // 크롤러 초기 후크 아래
       target: [-28 + onArc(21.2, 55)[0], onArc(21.2, 55)[1]],
@@ -124,6 +128,7 @@ const S6 = {
       id: 'duct-1',
       name: '덕트 모듈',
       size: [5, 1.2, 1.5],
+      shape: 'module',
       mass: 3,
       pos: [28 - 15, 0, 0], // 타워 초기 트롤리 반경 15m, 선회 180° 방향
       target: [28 + onArc(22, 120)[0], onArc(22, 120)[1]],
@@ -233,6 +238,8 @@ const TRUCK_BED = 1.35; // 트레일러 적재함 높이 (m)
 // 부재: 트럭 적재함 → [하역] 야적장 슬롯 → [건립] 건물 목표(고도 포함)
 const memberLoad = (id, name, size, mass, truckPos, yardPos, target, targetElev, dependsOn = [], arriveTime = 0) => ({
   id, name, size, mass,
+  // 철골 부재 시각 형상: 기둥·거더(가늘고 김)는 H형강, 데크·지붕은 박스
+  shape: Math.max(size[0], size[1], size[2]) / Math.min(size[0], size[1], size[2]) > 4 ? 'h-beam' : undefined,
   pos: [truckPos[0], 0, truckPos[1]],
   elev: TRUCK_BED,
   route: [
@@ -306,8 +313,8 @@ const S10 = {
   site: { width: 120, depth: 40, minX: -60, minZ: -20 },
   cranes: [CARRY_CRAWLER],
   loads: [
-    { id: 'PM-1', name: '설비 모듈 1', size: [3, 2, 3], mass: 12, pos: [44, 0, 6], target: [-34, 6] },
-    { id: 'PM-2', name: '설비 모듈 2', size: [3, 2, 3], mass: 10, pos: [44, 0, -6], target: [-34, -6] },
+    { id: 'PM-1', name: '설비 모듈 1', size: [3, 2, 3], mass: 12, shape: 'module', pos: [44, 0, 6], target: [-34, 6] },
+    { id: 'PM-2', name: '설비 모듈 2', size: [3, 2, 3], mass: 10, shape: 'module', pos: [44, 0, -6], target: [-34, -6] },
   ],
   ground: { bearingCapacity: 30, grade: '다짐 노반' },
   rigging: { rigTime: 45, derigTime: 25, trialLiftTime: 0 },

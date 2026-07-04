@@ -194,7 +194,7 @@ export function workerFigure(seed = 1) {
  * 접지 그림자 — 반투명 원 2~3장 스택 (텍스처 불필요 → 헤드리스 안전).
  * 태양 그림자가 닿지 않는 각도에서도 물체가 지면에 '붙어' 보이게 한다.
  */
-export function contactShadow(radius = 2) {
+export function contactShadow(radius = 2, yBase = 0.012) {
   const g = new THREE.Group();
   const layers = [
     [radius, 0.08],
@@ -212,7 +212,7 @@ export function contactShadow(radius = 2) {
       }),
     );
     disc.rotation.x = -Math.PI / 2;
-    disc.position.y = 0.02 + i * 0.008;
+    disc.position.y = yBase + i * 0.004;
     g.add(disc);
   });
   return g;

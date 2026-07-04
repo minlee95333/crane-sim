@@ -1,4 +1,5 @@
 // 비원점 크레인 렌더 좌표 회귀 테스트.
+import * as THREE from 'three';
 import { MobileCraneView } from './MobileCraneView.js';
 import { TowerCraneView } from './TowerCraneView.js';
 import { SiteView } from './SiteView.js';
@@ -71,6 +72,54 @@ longBoomView.update({
     Math.abs(hookWorld.x - mobileState.hookPos[0]) < 1e-9 &&
       Math.abs(hookWorld.y - mobileState.hookPos[1]) < 1e-9,
   );
+}
+
+console.log('--- 부재 형상·슬링·리깅 연출 ---');
+{
+  // H형강: 시각 형상의 바운딩 박스가 코어 size 박스에 내접 (충돌 진실은 코어 AABB)
+  const girder = { id: 'hb', name: 'H거더', size: [8, 0.8, 0.5], shape: 'h-beam', mass: 5,
+    pos: [0, 0.4, 0], state: 'ground', yaw: 0 };
+  const lv = new LoadView([girder]);
+  const bbox = new THREE.Box3().setFromObject(lv.meshes.get('hb'));
+  const dims = bbox.getSize(new THREE.Vector3());
+  check(
+    `H형강 bbox ≈ 코어 size (${dims.x.toFixed(1)}×${dims.y.toFixed(1)}×${dims.z.toFixed(1)})`,
+    Math.abs(dims.x - 8) < 0.05 && Math.abs(dims.y - 0.8) < 0.05 && Math.abs(dims.z - 0.5) < 0.05,
+  );
+
+  // 슬링: hooked 상태에서 4가닥이 후크→상면 모서리로 이어짐
+  const hooked = { ...girder, pos: [10, 6, 0], state: 'hooked', hookedBy: 0, rigRemain: 0 };
+  const craneState = { hookPos: [10, 6 + 0.4 + 1.2, 0] };
+  lv.update([hooked], [], [craneState], 1);
+  const slings = lv.slings.get('hb');
+  check('매달림 시 슬링 4가닥 표시', slings.every((rope) => rope.visible));
+  const cornerX = slings.map((rope) => rope.position.x);
+  check(
+    '슬링이 부재 폭(±4m 모서리) 방향으로 벌어짐',
+    Math.min(...cornerX) < 9 && Math.max(...cornerX) > 11,
+  );
+
+  // 리깅 진행률: 절반 진행 시 슬링 일부만, 작업자 크루 표시
+  const rigging = { ...girder, pos: [10, 0.4, 0], state: 'rigging', hookedBy: 0,
+    rigRemain: 45, rigTime: 90 };
+  lv.update([rigging], [], [craneState], 2);
+  const visibleCount = slings.filter((rope) => rope.visible).length;
+  check(`리깅 50% 진행 시 슬링 ${visibleCount}가닥 (0<n<4)`, visibleCount > 0 && visibleCount < 4);
+  check('리깅 중 작업자 크루 표시', lv.riggers.get('hb').crew.visible);
+
+  // 안착 이즈: hooked→ground 전이 후 렌더 위치가 이전↔목표 사이를 지나 0.4s에 목표 도달
+  const placedAt = { ...girder, pos: [12, 0.4, 2], state: 'ground', yaw: 0 };
+  lv.update([hooked], [], [craneState], 3); // hooked 위치 (10, 6, 0)
+  lv.update([placedAt], [], [craneState], 3.02); // 전이 — 이즈 시작 (from 위치 유지)
+  lv.update([placedAt], [], [craneState], 3.22); // 중간 프레임 (t=0.5)
+  const mid = lv.meshes.get('hb').position.clone();
+  check(
+    '안착 전이 중 렌더 위치가 이전과 목표 사이 (이즈)',
+    mid.x > 10 && mid.x < 12 && mid.y < 6 && mid.y > 0.4,
+  );
+  lv.update([placedAt], [], [craneState], 4);
+  const done = lv.meshes.get('hb').position.clone();
+  check('이즈 완료 후 코어 위치와 일치', Math.abs(done.x - 12) < 1e-9 && Math.abs(done.y - 0.4) < 1e-9);
 }
 
 console.log('--- S9 트럭 렌더 ---');

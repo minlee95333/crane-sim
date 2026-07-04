@@ -147,10 +147,10 @@ export const DEFAULT_SCENARIO = {
   // 부재: 반경 21m 부근 배치 (초기 후크 반경 21.2m)
   // 25t 부재는 반경 21m에서 정격(~16.6t) 초과 → 리미터 데모용
   loads: [
-    { id: 'girder-1', name: '철골 거더', size: [8, 0.8, 0.5], mass: 5, pos: [21, 0, 4] },
+    { id: 'girder-1', name: '철골 거더', size: [8, 0.8, 0.5], mass: 5, shape: 'h-beam', pos: [21, 0, 4] },
     { id: 'pc-slab-1', name: 'PC 슬래브', size: [4, 0.3, 2.5], mass: 8, pos: [18, 0, -8] },
-    { id: 'module-1', name: '설비 모듈', size: [3, 2.5, 3], mass: 15, pos: [14, 0, 10] },
-    { id: 'tank-1', name: '중량 탱크', size: [4, 3, 4], mass: 25, pos: [21.2, 0, 0] },
+    { id: 'module-1', name: '설비 모듈', size: [3, 2.5, 3], mass: 15, shape: 'module', pos: [14, 0, 10] },
+    { id: 'tank-1', name: '중량 탱크', size: [4, 3, 4], mass: 25, shape: 'tank', pos: [21.2, 0, 0] },
   ],
 };
 
@@ -168,6 +168,7 @@ export const PLACE_SCENARIO = {
       id: 'pipe-1',
       name: '배관 스풀',
       size: [6, 0.6, 0.6],
+      shape: 'pipe',
       mass: 8, // 반경 21.2m 정격(~16.6t) 내
       pos: [21.2, 0, 0], // 초기 후크 바로 아래 (선회 0°)
       target: [21.2 * Math.cos(deg40), 21.2 * Math.sin(deg40)], // [x, z]
