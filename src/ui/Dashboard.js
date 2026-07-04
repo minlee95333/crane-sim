@@ -100,6 +100,14 @@ export class Dashboard {
       </section>
 
       <section class="dash-section">
+        <span class="dash-label">뷰 · 연출</span>
+        <div class="dash-row">
+          <button class="dash-btn" data-action="camera">📷 카메라: 궤도 (C)</button>
+          <button class="dash-btn" data-action="mute">🔊 소리 켬 (M)</button>
+        </div>
+      </section>
+
+      <section class="dash-section">
         <span class="dash-label">기록</span>
         <div class="dash-row">
           <button class="dash-btn" data-action="record">● 기록 시작</button>
@@ -307,6 +315,16 @@ export class Dashboard {
 
   setActiveCrane(index) {
     this.root.querySelector('#crane-select').value = String(index);
+  }
+
+  setCameraMode(label) {
+    this.root.querySelector('[data-action="camera"]').textContent = `📷 카메라: ${label} (C)`;
+  }
+
+  setMuted(muted) {
+    this.root.querySelector('[data-action="mute"]').textContent = muted
+      ? '🔇 소리 꺼짐 (M)'
+      : '🔊 소리 켬 (M)';
   }
 
   update(state, activeCrane, ui) {

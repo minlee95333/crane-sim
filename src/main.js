@@ -7,6 +7,8 @@ import { TowerCraneView } from './render/TowerCraneView.js';
 import { LoadView } from './render/LoadView.js';
 import { SiteView } from './render/SiteView.js';
 import { Effects } from './render/Effects.js';
+import { CameraRig } from './render/CameraRig.js';
+import { SoundView } from './render/SoundView.js';
 import { Simulation } from './sim/Simulation.js';
 import { Recorder, replay } from './sim/Recorder.js';
 import { KeyboardControl } from './control/KeyboardControl.js';
@@ -24,6 +26,12 @@ const dashboardRoot = document.getElementById('dashboard');
 const sceneManager = new SceneManager(container);
 const keyboard = new KeyboardControl();
 const recorder = new Recorder();
+const cameraRig = new CameraRig(sceneManager.camera, sceneManager.controls);
+const sound = new SoundView();
+// 브라우저 자동재생 정책: 첫 제스처에서 오디오 컨텍스트 생성
+for (const evt of ['pointerdown', 'keydown']) {
+  window.addEventListener(evt, () => sound.unlock(), { once: true });
+}
 
 const rad2deg = (r) => (r * 180) / Math.PI;
 
@@ -94,6 +102,11 @@ const dashboard = new Dashboard(dashboardRoot, SCENARIOS, {
   requestSetupPick: (index) => {
     pendingSetupIndex = index;
   },
+  camera: () => {
+    cameraRig.cycle();
+    dashboard.setCameraMode(cameraRig.label);
+  },
+  mute: () => dashboard.setMuted(sound.toggleMute()),
 });
 
 sceneManager.onGroundDoubleClick((pos) => {
@@ -149,6 +162,7 @@ function loadScenario(idx) {
   ];
   sceneManager.applySite(entry.scenario, framePoints); // 그림자·포그·펜스 현장 맞춤
   sceneManager.framePoints(framePoints);
+  cameraRig.retarget(); // 비궤도 모드면 새 현장으로 스냅
   dashboard.setScenario(scenarioIdx);
   dashboard.setCranes(entry.scenario.cranes, activeCrane);
   dashboard.setPlanResult(null);
@@ -168,6 +182,11 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyN') loadScenario(scenarioIdx + (e.shiftKey ? -1 : 1));
   if (e.code === 'KeyO') loadScenario(scenarioIdx); // 현재 시나리오 리셋
   if (e.code === 'KeyG') sceneManager.toggleGrid(); // 개발용 그리드·축
+  if (e.code === 'KeyC') {
+    cameraRig.cycle();
+    dashboard.setCameraMode(cameraRig.label);
+  }
+  if (e.code === 'KeyM') dashboard.setMuted(sound.toggleMute());
 
   if (e.code === 'Tab') {
     activeCrane = (activeCrane + 1) % sim.getState().cranes.length;
@@ -284,6 +303,11 @@ function loop(now) {
   siteView.update(state); // 트럭 등 현장 상태 (부재 동반 이동은 코어가 처리)
   loadView.update(state.loads, state.trucks, state.cranes, state.time);
   effects.update(state); // 안착·주행 먼지 (상태 전이·시뮬 시간 결정론)
+  cameraRig.update(state.cranes[activeCrane]);
+  sound.update(state, {
+    live: !playback && !planPlayer && !paused,
+    activeCrane,
+  });
 
   sceneManager.render();
   drawHUD(state, command);
@@ -345,7 +369,7 @@ function drawHUD(state, command) {
       : '';
   const swayLine = c.extra.swayMag > 0.05 ? ` | 흔들림 ${c.extra.swayMag.toFixed(2)}m` : '';
   const windLine = state.wind
-    ? `\n풍속     : ${state.wind.speed.toFixed(1)} m/s${state.wind.maxOperating ? ` (한계 ${state.wind.maxOperating})` : ''}${state.wind.maxOperating && state.wind.speed > state.wind.maxOperating ? ' ⛔ 작업중지' : ''}`
+    ? `\n풍속     : ${state.wind.speed.toFixed(1)} m/s · 풍향 ${rad2deg(state.wind.dir ?? 0).toFixed(0)}°${state.wind.maxOperating ? ` (한계 ${state.wind.maxOperating})` : ''}${state.wind.maxOperating && state.wind.speed > state.wind.maxOperating ? ' ⛔ 작업중지' : ''}`
     : '';
 
   const recLine = recorder.active
@@ -362,7 +386,7 @@ function drawHUD(state, command) {
   const radiusLabel = c.type === 'tower' ? '트롤리   ' : '작업반경 ';
 
   hud.textContent = [
-    `Crane Sim — ${entry.name} | FPS ${fps} | t=${state.time.toFixed(1)}s | 배속 ×${sim.timeScale}`,
+    `Crane Sim — ${entry.name} | FPS ${fps} | t=${state.time.toFixed(1)}s | 배속 ×${sim.timeScale} | 카메라 ${cameraRig.label}`,
     `${entry.desc}`,
     ``,
     craneLabel,
@@ -383,7 +407,7 @@ function drawHUD(state, command) {
     `${recLine}`,
     ``,
     `[주행] W/S 전·후진  A/D 좌·우회전    [팔] ←/→ 선회  ↑/↓ 기복  Q/E 권상·권하  Space 픽업`,
-    `N 다음 시나리오  O 리셋  Tab 크레인 전환  1~4 배속  R 기록  P 리플레이`,
+    `N 다음 시나리오  O 리셋  Tab 크레인 전환  1~4 배속  C 카메라  M 소리  G 그리드  R 기록  P 리플레이`,
     `마우스: 회전 | 휠: 줌 | 우클릭: 이동`,
   ].join('\n');
 }

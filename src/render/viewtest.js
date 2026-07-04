@@ -4,6 +4,8 @@ import { MobileCraneView } from './MobileCraneView.js';
 import { TowerCraneView } from './TowerCraneView.js';
 import { SiteView } from './SiteView.js';
 import { LoadView } from './LoadView.js';
+import { CameraRig } from './CameraRig.js';
+import { SoundView } from './SoundView.js';
 import { Simulation } from '../sim/Simulation.js';
 import { SCENARIOS } from '../../data/scenarios.js';
 
@@ -120,6 +122,31 @@ console.log('--- 부재 형상·슬링·리깅 연출 ---');
   lv.update([placedAt], [], [craneState], 4);
   const done = lv.meshes.get('hb').position.clone();
   check('이즈 완료 후 코어 위치와 일치', Math.abs(done.x - 12) < 1e-9 && Math.abs(done.y - 0.4) < 1e-9);
+}
+
+console.log('--- 카메라 리그·사운드 (헤드리스) ---');
+{
+  const controls = { enabled: true, update() {} };
+  const rig = new CameraRig(new THREE.PerspectiveCamera(), controls);
+  check('초기 모드 = 궤도', rig.mode === 'orbit' && rig.label === '궤도');
+  rig.cycle(); // follow
+  const cs = { basePos: [10, 0, 0], slewAngle: 0, hookPos: [30, 5, 0], type: 'mobile', extra: {} };
+  rig.update(cs);
+  check('추적 모드: 카메라가 크레인 후방(-x)에 스냅', rig.camera.position.x < 10 && rig.camera.position.y > 5);
+  check('비궤도 모드에서 OrbitControls 비활성', controls.enabled === false);
+  rig.cycle(); // cab
+  rig.cycle(); // hook
+  rig.update(cs);
+  check('후크캠: 후크 근처 후상방', Math.abs(rig.camera.position.x - 24) < 1 && rig.camera.position.y > 9);
+  rig.cycle(); // orbit 복귀
+  rig.update(cs);
+  check('궤도 복귀 시 OrbitControls 재활성', controls.enabled === true);
+
+  // SoundView: Node(AudioContext 없음)에서 전체 no-op — 구성·호출 안전만 보증
+  const sv = new SoundView();
+  sv.unlock();
+  sv.update({ time: 1, cranes: [cs], loads: [], safety: {} }, { live: true, activeCrane: 0 });
+  check('SoundView는 오디오 미지원 환경에서 no-op', sv.supported === false && sv.ctx === null);
 }
 
 console.log('--- S9 트럭 렌더 ---');
