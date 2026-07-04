@@ -15,13 +15,16 @@ export class Load {
    * @param {Object} def { id, name, size:[w,h,d](m), mass(t), pos:[x,y,z], elev?(m),
    *                       target?:[x,z], route?:[{target:[x,z], elev?}, ...],
    *                       rigTime?(s), derigTime?(s), arriveTime?(s),
-   *                       dependsOn?: [loadId], maxWind?(m/s) }
+   *                       dependsOn?: [loadId], maxWind?(m/s),
+   *                       shape?(렌더 형상 태그), windArea?(수풍면적 m²) }
    */
   constructor(def) {
     this.id = def.id;
     this.name = def.name ?? def.id;
     this.size = def.size; // [w, h, d]
     this.mass = def.mass; // t
+    this.shape = def.shape ?? null; // 렌더 형상 태그 (h-beam/pipe/rebar/tank/…) — 코어는 데이터만 운반
+    this.windArea = def.windArea ?? null; // 수풍면적 (m², null = 크기에서 유도) (T2-⑦)
     this.pos = [...def.pos]; // 중심 좌표. y는 바닥고(elev) + h/2로 정규화
     this.elev = def.elev ?? 0; // 초기 바닥 높이 (트럭 적재함 등)
     this.pos[1] = this.elev + this.size[1] / 2;
@@ -42,6 +45,12 @@ export class Load {
     this.hookedBy = null; // craneId
     this.stageChangedAt = null;
     this.yardedAt = null; // 첫 여정(트럭→야적) 완료 시각 — 이후 건립에서도 유지
+
+    // 매달림 거동 옵션 상태 (크레인 스펙 physics 플래그가 켠 경우에만 World가 갱신)
+    this.yaw = 0; // 부재 요 회전각 (rad, 0 = 축 정렬) — physics.loadYaw (T3-⑨ 전 단계)
+    this.yawVel = 0;
+    this._yawOffset = 0; // 픽업 시점의 (yaw − slewAngle) — 상대 자세 유지용
+    this.sway = null; // 이중진자 2단(후크→부재) — physics.doublePendulum 시 attach에서 생성 (T3-⑩)
   }
 
   /** 현재 여정 단계의 목표 [x, z] (여정 없으면 null) */
@@ -80,6 +89,9 @@ export class Load {
       name: this.name,
       size: [...this.size],
       mass: this.mass,
+      shape: this.shape,
+      windArea: this.windArea,
+      yaw: this.yaw,
       pos: [...this.pos],
       target: this.target ? [...this.target] : null,
       targetElev: this.targetElev,

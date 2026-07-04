@@ -2,6 +2,7 @@
 // 렌더·RL 무관. world.step(dt, commands) 하나로 전체가 돌아간다.
 
 import { Load } from './Load.js';
+import { Sway } from './Sway.js';
 import { craneGeometry, checkPair } from './Interference.js';
 
 // 픽업 판정 여유 (m)
@@ -10,6 +11,15 @@ const ATTACH_MAX_VERT = 4.0; // 후크~부재 상면 수직거리 (슬링이 흡
 const RELEASE_MAX_GAP = 0.5; // 내려놓기 허용: 부재 바닥~지면 간격
 export const HOOK_GAP = 1.2; // 후크 블록 길이 (후크점~부재 상면)
 const PLACE_TOL = 1.5; // 목표 안착 허용 오차 (수평, m)
+
+// 바람 외력 (T2-⑦, sway 켠 크레인만): F[N] ≈ WIND_ACCEL_COEF · v² · A  (≈ ½·ρ·Cd)
+export const WIND_ACCEL_COEF = 0.75;
+export const HOOK_WIND_AREA = 0.4; // 빈 후크블록 수풍면적 (m²)
+
+// 부재 요(yaw) 추종 (physics.loadYaw): 비틀림 스프링-감쇠로 선회각을 지연 추종
+const YAW_SPRING = 0.15; // (1/s²)
+const YAW_DAMP = 0.4; // (1/s)
+const LOAD_SWAY_DAMPING = 0.35; // 이중진자 2단(슬링) 감쇠 — 로프보다 짧아 빨리 잦아듦
 
 export class World {
   constructor() {
@@ -49,10 +59,13 @@ export class World {
     this.siteBounds = null;
   }
 
-  /** 바람 조건 설정. { speed: 상수 } 또는 { timeline: [[t, 풍속]...], maxOperating } */
+  /**
+   * 바람 조건 설정. { speed: 상수 } 또는 { timeline: [[t, 풍속]...], maxOperating }
+   * 확장(옵션): dir(부는 방향 rad, 기본 0=+x), gust: { amp, period } — 결정론 거스트 변조.
+   */
   setWind(def) {
     this.windDef = def ?? null;
-    this.windSpeed = this.#windAt(0);
+    this.windSpeed = this.#windAt(0) * this.#gustFactor(0);
   }
 
   #windAt(t) {
@@ -66,6 +79,41 @@ export class World {
       return v;
     }
     return this.windDef.speed ?? 0;
+  }
+
+  /** 거스트 변조 계수 — 시간의 순수 함수(난수 없음)라 결정론 유지. gust 미정의면 1. */
+  #gustFactor(t) {
+    const g = this.windDef?.gust;
+    if (!g?.amp) return 1;
+    const T = g.period ?? 10;
+    // 비가약 주기 2개의 곱 — 단조 반복 없이 [1-amp, 1+amp] 안에서 요동
+    const s = Math.sin((2 * Math.PI * t) / T) * Math.sin((2 * Math.PI * t) / (T * 0.377));
+    return Math.max(0, 1 + g.amp * s);
+  }
+
+  /**
+   * 크레인별 바람 외력 가속 주입 (sway 켠 크레인만 소비).
+   * 크기 ∝ v²·수풍면적/질량 — 매달린 부재가 있으면 그 면적·질량, 없으면 빈 후크블록.
+   */
+  #applyWind() {
+    for (let i = 0; i < this.cranes.length; i++) {
+      const crane = this.cranes[i];
+      if (!this.windDef || this.windSpeed <= 0 || !crane.sway) {
+        crane.windAccel[0] = 0;
+        crane.windAccel[1] = 0;
+        continue;
+      }
+      const held = this.loads.find((l) => l.state === 'hooked' && l.hookedBy === i);
+      const area = held
+        ? held.windArea ?? Math.max(held.size[0], held.size[2]) * held.size[1]
+        : HOOK_WIND_AREA;
+      const hookMass = crane.spec.rating?.hookBlockMass ?? 0.35;
+      const massT = (held ? held.mass : 0) + hookMass;
+      const a = (WIND_ACCEL_COEF * this.windSpeed ** 2 * area) / (massT * 1000);
+      const dir = this.windDef.dir ?? 0;
+      crane.windAccel[0] = a * Math.cos(dir);
+      crane.windAccel[1] = a * Math.sin(dir);
+    }
   }
 
   /** 부재의 작업한계풍속 (부재별 > 현장 기본 > 무제한) */
@@ -135,8 +183,9 @@ export class World {
    * @param {Array<import('./Crane.js').CraneCommand>} commands 크레인별 명령
    */
   step(dt, commands = []) {
-    // 바람 갱신
-    this.windSpeed = this.#windAt(this.time);
+    // 바람 갱신 (거스트는 시간의 결정론 함수) + 크레인별 외력 주입
+    this.windSpeed = this.#windAt(this.time) * this.#gustFactor(this.time);
+    this.#applyWind();
 
     // 트럭: 출차 확정·위치·적재 동반 이동
     this.#stepTrucks();
@@ -172,11 +221,25 @@ export class World {
         if (crane.driveVel !== undefined) crane.driveVel = 0; // 충돌 정지
       }
     });
-    // 매달린 부재는 후크를 따라간다
+    // 매달린 부재는 후크를 따라간다 (+옵션: 이중진자 2단 오프셋, 요 회전 추종)
     for (const load of this.loads) {
-      if (load.state === 'hooked') {
-        const hook = this.cranes[load.hookedBy].getHookPos();
-        load.pos = [hook[0], hook[1] - HOOK_GAP - load.size[1] / 2, hook[2]];
+      if (load.state !== 'hooked') continue;
+      const crane = this.cranes[load.hookedBy];
+      const hook = crane.getHookPos();
+      let ox = 0;
+      let oz = 0;
+      if (load.sway) {
+        // 이중진자 2단: 매달림점 = 후크, 진자 길이 = 슬링(후크갭)+부재 반높이
+        const penLen = Math.max(HOOK_GAP + load.size[1] / 2, 1);
+        load.sway.update(dt, hook[0], hook[2], penLen, crane.windAccel[0], crane.windAccel[1]);
+        [ox, oz] = load.sway.offset;
+      }
+      load.pos = [hook[0] + ox, hook[1] - HOOK_GAP - load.size[1] / 2, hook[2] + oz];
+      if (crane.spec.physics?.loadYaw) {
+        // 요 회전: 픽업 시 상대 자세를 유지하며 선회각을 스프링-감쇠로 지연 추종
+        const target = crane.slewAngle + load._yawOffset;
+        load.yawVel += (-YAW_SPRING * (load.yaw - target) - YAW_DAMP * load.yawVel) * dt;
+        load.yaw += load.yawVel * dt;
       }
     }
     this.#checkSafety();
@@ -257,12 +320,15 @@ export class World {
 
   /** 매달린 부재의 장애물·기시공 구조물 충돌 · 금지구역 침범 검사 */
   #checkSafety() {
-    const hooked = this.loads.filter((l) => l.state === 'hooked');
+    // yaw 회전 부재는 회전 박스의 외접 AABB로 판정 — 시각 회전과 점유 영역을 일치시킨다
+    const hooked = this.loads
+      .filter((l) => l.state === 'hooked')
+      .map((l) => ({ l, size: yawExtents(l) }));
 
     this.collisionIds = [];
     for (const ob of this.obstacles) {
-      for (const l of hooked) {
-        if (aabbOverlap(l.pos, l.size, ob)) {
+      for (const { l, size } of hooked) {
+        if (aabbOverlap(l.pos, size, ob)) {
           this.collisionIds.push(ob.id);
           break;
         }
@@ -273,9 +339,9 @@ export class World {
     for (const tr of this.trucks) {
       const ob = tr.obstacle();
       if (!ob) continue;
-      for (const l of hooked) {
+      for (const { l, size } of hooked) {
         if (tr.loadIds.includes(l.id) && l.stage === 0) continue;
-        if (aabbOverlap(l.pos, l.size, ob)) {
+        if (aabbOverlap(l.pos, size, ob)) {
           this.collisionIds.push(ob.id);
           break;
         }
@@ -288,15 +354,15 @@ export class World {
     for (const p of this.loads) {
       if (p.state !== 'placed') continue;
       const shrunk = [p.size[0] - PEN * 2, p.size[1] - PEN * 2, p.size[2] - PEN * 2];
-      for (const l of hooked) {
-        if (aabbOverlap(l.pos, l.size, { pos: [p.pos[0], p.bottomY + PEN, p.pos[2]], size: shrunk })) {
+      for (const { l, size } of hooked) {
+        if (aabbOverlap(l.pos, size, { pos: [p.pos[0], p.bottomY + PEN, p.pos[2]], size: shrunk })) {
           this.collisionIds.push(p.id);
           break;
         }
       }
     }
 
-    this.zoneViolation = hooked.some((l) =>
+    this.zoneViolation = hooked.some(({ l }) =>
       this.noFlyZones.some(
         (z) =>
           l.pos[0] >= z.min[0] && l.pos[0] <= z.max[0] &&
@@ -387,6 +453,12 @@ export class World {
     load.hookedBy = craneId;
     load.timer = 0;
     crane.loadMass = load.mass;
+    // 매달림 거동 옵션: 현재 자세를 기준으로 요 추종 시작 / 이중진자 2단 생성
+    load._yawOffset = load.yaw - crane.slewAngle;
+    load.yawVel = 0;
+    load.sway = crane.spec.physics?.doublePendulum
+      ? new Sway({ damping: LOAD_SWAY_DAMPING })
+      : null;
     // 슬링이 팽팽해지는 위치로 후크 스냅 + 부재 바닥이 지면 아래로 못 가게 최저높이 설정
     crane.setHookHeight(load.topY + HOOK_GAP);
     crane.minHookY = load.size[1] + HOOK_GAP;
@@ -422,6 +494,8 @@ export class World {
     held.timer = 0;
     crane.loadMass = 0;
     crane.minHookY = 0;
+    held.sway = null; // 이중진자 2단 폐기 (다음 픽업에서 새로 생성 — 결정론 리셋)
+    held.yawVel = 0;
 
     // 목표가 있고 허용오차 안에 안착했으면 단계 진행 — 마지막 단계면 placed(최종),
     // 중간 단계(하역·야적)면 다음 여정으로 넘어가고 ground(재인양 가능)
@@ -433,6 +507,7 @@ export class World {
         held.pos[0] = held.target[0];
         held.pos[2] = held.target[1];
         held.pos[1] = held.targetElev + held.size[1] / 2; // 목표 바닥고 위에 안착
+        held.yaw = 0; // 위치 스냅과 동일 의미론 — 목표 안착은 축 정렬로 시공
         if (held.finalLeg) {
           held.state = 'placed';
           held.stageChangedAt = this.time;
@@ -473,7 +548,13 @@ export class World {
       obstacles: this.obstacles.map((o) => ({ id: o.id, pos: [...o.pos], size: [...o.size] })),
       noFlyZones: this.noFlyZones.map((z) => ({ id: z.id, min: [...z.min], max: [...z.max] })),
       trucks: this.trucks.map((t) => t.snapshot(this.time)),
-      wind: this.windDef ? { speed: this.windSpeed, maxOperating: this.windDef.maxOperating ?? null } : null,
+      wind: this.windDef
+        ? {
+            speed: this.windSpeed,
+            dir: this.windDef.dir ?? 0,
+            maxOperating: this.windDef.maxOperating ?? null,
+          }
+        : null,
       safety: {
         collisionIds: [...this.collisionIds],
         zoneViolation: this.zoneViolation,
@@ -486,6 +567,18 @@ export class World {
       lastEvent: this.lastEvent,
     };
   }
+}
+
+/**
+ * yaw 회전한 부재의 외접 AABB 크기 — 회전 박스를 감싸는 축 정렬 박스.
+ * yaw = 0이면 원본 크기 그대로 (기존 동작 불변).
+ */
+function yawExtents(l) {
+  if (!l.yaw) return l.size;
+  const c = Math.abs(Math.cos(l.yaw));
+  const s = Math.abs(Math.sin(l.yaw));
+  const [w, h, d] = l.size;
+  return [w * c + d * s, h, w * s + d * c];
 }
 
 /**

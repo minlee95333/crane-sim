@@ -37,6 +37,7 @@ export class Crane {
     this.basePos = [...(spec.basePos ?? [0, 0, 0])];
     this.slewAngle = 0;
     this.loadMass = 0; // 매달린 하중 (t)
+    this.windAccel = [0, 0]; // 바람 외력 가속 [x, z] (m/s²) — World가 매 스텝 주입 (T2-⑦)
   }
 
   /**

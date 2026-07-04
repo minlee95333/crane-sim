@@ -314,6 +314,58 @@ const S10 = {
   planning: { defaultLiftDuration: 300 },
 };
 
+/**
+ * S11 — 강풍 리깅 (P7.9 매달림 거동 옵션 시연장):
+ *   바람 외력→흔들림(sway), 부재 요 회전(loadYaw), 이중진자(doublePendulum) 전부 ON.
+ *   거스트 주기(9s)가 진자 고유주기(~7s)에 가까워 공진성 요동이 생기고,
+ *   풍속 타임라인이 한계(14 m/s)에 접근하며 거스트 창에서만 픽업이 열린다.
+ *   플래그는 이 시나리오 전용 — 다른 시나리오·계획 계층 결과는 불변.
+ */
+const STORM_CRAWLER = {
+  ...CRAWLER_100T,
+  id: 'crawler-100t-storm',
+  physics: { sway: true, loadYaw: true, doublePendulum: true },
+};
+const S11 = {
+  site: { width: 90, depth: 70, minX: -45, minZ: -35 },
+  cranes: [STORM_CRAWLER],
+  loads: [
+    {
+      id: 'girder-w1',
+      name: '장스팬 거더',
+      size: [12, 0.9, 0.4],
+      mass: 6.5,
+      shape: 'h-beam',
+      windArea: 10.8, // 12m × 0.9m 측면 — 수풍면적이 커 바람에 민감
+      pos: [21.2, 0, 0],
+      target: onArc(21.2, 75),
+    },
+    {
+      id: 'panel-w1',
+      name: '외장 패널 팩',
+      size: [5, 2.4, 0.6],
+      mass: 3,
+      windArea: 12,
+      maxWind: 12, // 패널은 부재별 한계가 더 낮다 — 후반 타임라인에서 작업 불가
+      pos: [onArc(21.2, -30)[0], 0, onArc(21.2, -30)[1]],
+      target: onArc(15, -95),
+    },
+  ],
+  obstacles: [],
+  noFlyZones: [],
+  wind: {
+    timeline: [
+      [0, 7], // 초반: 여유 있는 바람
+      [120, 10], // 중반: 흔들림 뚜렷
+      [240, 12.5], // 후반: 거스트 피크가 한계(14)를 넘나듦 — 작업 창 좁아짐
+    ],
+    dir: deg(115), // 선회 아크를 가로지르는 방향 — 횡풍 흔들림 유도
+    gust: { amp: 0.35, period: 9 },
+    maxOperating: 14,
+  },
+  rigging: { rigTime: 45, derigTime: 25 },
+};
+
 export const SCENARIOS = [
   { id: 'free', name: '자유 연습', desc: '목표 없음 — 부재 4종 자유 조작', scenario: DEFAULT_SCENARIO },
   { id: 'place-basic', name: 'S1 기본 안착', desc: '픽업 → 선회 40° → 목표 안착', scenario: S1 },
@@ -326,4 +378,5 @@ export const SCENARIOS = [
   { id: 'macro-plan', name: 'S8 전체 계획 현장', desc: '크레인 3대 · 양중물 12개 · 셋업 이동과 시공순서', scenario: S8 },
   { id: 'yard-erection', name: 'S9 트럭 하역·철골 건립', desc: '트럭 1대 전량 반입 → 야적장 하역 → 2×2 입체 철골 건립 (여정 2단계·고소 안착·전도안정성)', scenario: S9 },
   { id: 'pick-carry', name: 'S10 픽앤캐리 통로', desc: '픽업·목표 78m 이격 — 하중 매단 채 주행(감격 정격·주행 전도)으로 안착', scenario: S10 },
+  { id: 'storm-rig', name: 'S11 강풍 리깅', desc: '바람 외력→흔들림·부재 요 회전·이중진자 ON — 거스트 창에서 정밀 안착', scenario: S11 },
 ];

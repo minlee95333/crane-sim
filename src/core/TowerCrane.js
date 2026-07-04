@@ -65,10 +65,10 @@ export class TowerCrane extends Crane {
       this.maxRopeLength(),
     );
 
-    // 흔들림 (옵션): 매달림점 = 트롤리 월드 위치
+    // 흔들림 (옵션): 매달림점 = 트롤리 월드 위치. 바람 외력은 World가 windAccel로 주입
     if (this.sway) {
       const [sx, , sz] = this.#suspensionPos();
-      this.sway.update(dt, sx, sz, this.ropeLength);
+      this.sway.update(dt, sx, sz, this.ropeLength, this.windAccel[0], this.windAccel[1]);
     }
   }
 
