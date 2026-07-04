@@ -44,6 +44,9 @@ export class World {
     // 바람 (setWind로 설정 — 없으면 바람 제약 비활성)
     this.windDef = null; // { speed?|timeline?: [[t, m/s]...], maxOperating? }
     this.windSpeed = 0;
+
+    // 현장 경계 (Simulation이 scenario.site로 설정 — 주행 이탈 방지). null이면 무제한.
+    this.siteBounds = null;
   }
 
   /** 바람 조건 설정. { speed: 상수 } 또는 { timeline: [[t, 풍속]...], maxOperating } */
@@ -158,9 +161,17 @@ export class World {
     }
 
     // 리깅 작업 중인 크레인은 조작 동결 (실제: 크루 작업 중 크레인 정지)
-    this.cranes.forEach((crane, i) =>
-      crane.step(dt, this.#riggingBusy(i) ? {} : (commands[i] ?? {})),
-    );
+    // 주행(drive/steer)으로 base가 움직이면 충돌·경계 침범 시 되돌린다.
+    this.cranes.forEach((crane, i) => {
+      const px = crane.basePos[0];
+      const pz = crane.basePos[2];
+      crane.step(dt, this.#riggingBusy(i) ? {} : (commands[i] ?? {}));
+      if ((crane.basePos[0] !== px || crane.basePos[2] !== pz) && this.#baseBlocked(i)) {
+        crane.basePos[0] = px;
+        crane.basePos[2] = pz;
+        if (crane.driveVel !== undefined) crane.driveVel = 0; // 충돌 정지
+      }
+    });
     // 매달린 부재는 후크를 따라간다
     for (const load of this.loads) {
       if (load.state === 'hooked') {
@@ -171,6 +182,49 @@ export class World {
     this.#checkSafety();
     this.#checkCraneInterference();
     this.time += dt;
+  }
+
+  /**
+   * 주행 중 base 충돌 판정: 크레인 본체 원이 장애물·금지구역·트럭·타 크레인·현장경계를
+   * 침범하는가. 침범이면 호출측이 이동을 되돌린다 (실시간 주행 안전).
+   */
+  #baseBlocked(ci) {
+    const me = this.cranes[ci];
+    const g = me.spec.geometry;
+    const r = g.bodyRadius ?? Math.max(g.bodyWidth ?? 2, g.bodyLength ?? 2) / 2;
+    const [x, , z] = me.basePos;
+
+    // 현장 경계
+    const s = this.siteBounds;
+    if (s) {
+      const minX = s.minX ?? -((s.width ?? Infinity) / 2);
+      const maxX = s.maxX ?? minX + (s.width ?? Infinity);
+      const minZ = s.minZ ?? -((s.depth ?? Infinity) / 2);
+      const maxZ = s.maxZ ?? minZ + (s.depth ?? Infinity);
+      if (x < minX + r || x > maxX - r || z < minZ + r || z > maxZ - r) return true;
+    }
+    // 장애물 (AABB + 본체 반경)
+    for (const o of this.obstacles) {
+      if (Math.abs(x - o.pos[0]) <= o.size[0] / 2 + r && Math.abs(z - o.pos[2]) <= o.size[2] / 2 + r) return true;
+    }
+    // 금지구역
+    for (const zn of this.noFlyZones) {
+      if (x >= zn.min[0] - r && x <= zn.max[0] + r && z >= zn.min[1] - r && z <= zn.max[1] + r) return true;
+    }
+    // 트럭 (현장에 있을 때)
+    for (const tr of this.trucks) {
+      const ob = tr.obstacle?.();
+      if (ob && Math.abs(x - ob.pos[0]) <= ob.size[0] / 2 + r && Math.abs(z - ob.pos[2]) <= ob.size[2] / 2 + r) return true;
+    }
+    // 타 크레인 본체
+    for (let cj = 0; cj < this.cranes.length; cj++) {
+      if (cj === ci) continue;
+      const og = this.cranes[cj].spec.geometry;
+      const or = og.bodyRadius ?? Math.max(og.bodyWidth ?? 2, og.bodyLength ?? 2) / 2;
+      const ob = this.cranes[cj].basePos;
+      if (Math.hypot(x - ob[0], z - ob[2]) < r + or) return true;
+    }
+    return false;
   }
 
   /** 크레인 간 붐 이격·테일스윙 접촉 판정 (2대 이상) */

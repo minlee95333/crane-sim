@@ -51,6 +51,7 @@ export class Simulation {
       this.world.addNoFlyZone(def);
     }
     this.world.setWind(this.scenario.wind ?? null);
+    this.world.siteBounds = this.scenario.site ?? null; // 주행 이탈 방지 경계
     this.accumulator = 0;
     return this.getState();
   }

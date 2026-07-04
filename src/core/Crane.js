@@ -10,6 +10,8 @@
  * @property {number} slew   선회 (-1: 반시계, +1: 시계)
  * @property {number} luff   기복/트롤리 (-1: 반경 축소, +1: 반경 확대)
  * @property {number} hoist  권상 (-1: 내림, +1: 올림)
+ * @property {number} [drive] 주행 (-1: 후진, +1: 전진) — 이동식만, 언더캐리지 헤딩 방향
+ * @property {number} [steer] 조향 (-1: 좌회전, +1: 우회전) — 이동식만, 언더캐리지 헤딩 회전
  */
 
 /**

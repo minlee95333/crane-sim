@@ -29,6 +29,10 @@ export class MobileCrane extends Crane {
     this.slewAngle = spec.initial?.slewAngle ?? 0;
     this.ropeLength = spec.initial?.ropeLength ?? 10; // 붐끝→후크 (m)
 
+    // 주행: 언더캐리지(트랙) 헤딩 — 상부체 선회(slewAngle)와 독립. 실시간 수동 주행용.
+    this.driveYaw = spec.initial?.driveYaw ?? 0; // 트랙이 향한 방위 (rad, 0 = +x)
+    this.driveVel = 0; // 현재 주행 속도 (m/s, 램프 대상)
+
     // 현재 속도 (램프 대상)
     this.vel = { slew: 0, luff: 0, hoist: 0 };
 
@@ -52,6 +56,9 @@ export class MobileCrane extends Crane {
       luff: clamp(cmd?.luff ?? 0, -1, 1),
       hoist: clamp(cmd?.hoist ?? 0, -1, 1),
     };
+
+    // --- 주행 (언더캐리지) — 실시간 수동 조작. 계획 명령엔 drive/steer 없어 무영향 ---
+    this.#drive(dt, clamp(cmd?.drive ?? 0, -1, 1), clamp(cmd?.steer ?? 0, -1, 1));
 
     // --- 모멘트 리미터 (과부하방지장치) ---
     // 하중률 ≥ 100%: 상황을 악화시키는 동작만 차단.
@@ -95,6 +102,27 @@ export class MobileCrane extends Crane {
         bz + r * Math.sin(this.slewAngle),
         this.ropeLength,
       );
+    }
+  }
+
+  /**
+   * 언더캐리지 주행: steer로 트랙 헤딩을 돌리고, drive로 헤딩 방향으로 이동.
+   * 가감속 램프 + 최고속도 (트럭·재배치와 동일 준정적 원칙). 명령 0이면 관성 감속 후 정지.
+   * 고정식(planning.movable === false)은 주행하지 않는다. World가 충돌 시 되돌린다.
+   */
+  #drive(dt, drive, steer) {
+    const planning = this.spec.planning ?? {};
+    if ((planning.movable ?? true) === false) return;
+    const steerRate = planning.steerRate ?? 0.14; // ~8°/s
+    const maxSpeed = planning.driveSpeed ?? planning.travelSpeed ?? 1.0;
+    const accel = planning.driveAccel ?? planning.travelAccel ?? 0.3;
+
+    if (steer !== 0) this.driveYaw += steer * steerRate * dt;
+    // 목표 속도로 램프 (명령 0 → 0으로 감속). 하중 매달고 주행하면 수동 픽앤캐리.
+    this.driveVel = rampVelocity(this.driveVel, drive * maxSpeed, accel, dt);
+    if (Math.abs(this.driveVel) > 1e-5) {
+      this.basePos[0] += Math.cos(this.driveYaw) * this.driveVel * dt;
+      this.basePos[2] += Math.sin(this.driveYaw) * this.driveVel * dt;
     }
   }
 
@@ -162,6 +190,8 @@ export class MobileCrane extends Crane {
       vel: { ...this.vel },
       limiterActive: this.limiterActive ?? false,
       swayMag: this.sway ? this.sway.magnitude : 0,
+      driveYaw: this.driveYaw,
+      driveVel: this.driveVel,
     };
   }
 }

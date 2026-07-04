@@ -29,7 +29,9 @@ export class MobileCraneView {
     // 루트 (베이스 위치)
     this.root = new THREE.Group();
 
-    // --- 하부체: 크롤러 트랙 2개 ---
+    // --- 하부체: 크롤러 트랙 2개 (언더캐리지 — driveYaw로 회전) ---
+    this.lower = new THREE.Group();
+    this.root.add(this.lower);
     const trackH = 1.1;
     const trackL = g.bodyLength;
     const trackW = 1.2;
@@ -37,12 +39,12 @@ export class MobileCraneView {
     for (const side of [-1, 1]) {
       const track = box(trackL, trackH, trackW, MAT.track);
       track.position.set(0, trackH / 2, (side * gauge) / 2);
-      this.root.add(track);
+      this.lower.add(track);
     }
     // 차대
     const carBody = box(trackL * 0.6, 0.7, gauge * 0.9, MAT.counter);
     carBody.position.y = trackH + 0.35;
-    this.root.add(carBody);
+    this.lower.add(carBody);
 
     // --- 상부체 (선회) ---
     this.upper = new THREE.Group();
@@ -112,6 +114,9 @@ export class MobileCraneView {
   update(state) {
     const [bx, by, bz] = state.basePos;
     this.root.position.set(bx, by, bz);
+
+    // 언더캐리지(트랙)는 주행 헤딩으로 회전 — 상부체 선회와 독립
+    this.lower.rotation.y = -(state.extra.driveYaw ?? 0);
 
     // 코어: hookX = r·cos(slew), hookZ = +r·sin(slew)
     // three.js rotation.y=θ는 +x를 -z로 돌리므로 부호 반전
