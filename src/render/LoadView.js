@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { HOOK_GAP } from '../core/World.js';
 import { ropeSegment, stretchBetween, workerFigure, contactShadow } from './parts.js';
 
-const PALETTE = [0x4a7fb5, 0x6d9e6b, 0xb08a4f, 0x8a6db0, 0xb0625f];
+export const PALETTE = [0x4a7fb5, 0x6d9e6b, 0xb08a4f, 0x8a6db0, 0xb0625f]; // 미니맵과 공유
 const SLING_MAT = new THREE.MeshStandardMaterial({ color: 0x2c2f33, roughness: 0.7 });
 const FRAME_MAT = new THREE.LineBasicMaterial({ color: 0x2a2d31 });
 const EASE_SEC = 0.4; // 안착 시각 보간 시간

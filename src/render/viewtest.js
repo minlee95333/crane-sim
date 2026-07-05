@@ -7,6 +7,8 @@ import { LoadView } from './LoadView.js';
 import { CameraRig } from './CameraRig.js';
 import { SoundView } from './SoundView.js';
 import { AgentView } from './AgentView.js';
+import { OverlayView } from './OverlayView.js';
+import { ScreenWidgets } from './ScreenWidgets.js';
 import { Simulation } from '../sim/Simulation.js';
 import { SCENARIOS } from '../../data/scenarios.js';
 
@@ -145,6 +147,62 @@ console.log('--- 지상 에이전트 뷰 ---');
     Math.abs(vehicle.rotation.y - -Math.PI / 2) < 1e-9,
   );
   check('보행 중 바운스 모션 적용', worker.scale.y !== 1);
+}
+
+console.log('--- 보조 오버레이 (씬 앵커) ---');
+{
+  const ov = new OverlayView();
+  const craneState = { hookPos: [21.2, 8, 0] };
+  const baseState = { cranes: [craneState], agents: [], safety: {} };
+  const girder = { id: 'g', pos: [22, 0.25, 0], size: [8, 0.5, 0.5], yaw: 0 };
+
+  // 빈 후크 + 적격 후보 → 조준점 녹색, 후크 투영 위치
+  ov.update(baseState, 0, {
+    live: true,
+    preview: { load: girder, horiz: 0.8, vert: 1.2, horizOk: true, vertOk: true, eligible: true, ok: true },
+    release: null,
+  });
+  check(
+    '조준점이 후크 지면 투영에 표시 (녹색)',
+    ov.reticle.visible && ov.reticle.position.x === 21.2 && ov.reticle.position.z === 0 &&
+      ov.reticleRing.material === ov.mats.ok,
+  );
+  check('픽업 가이드(허용원·브래킷) 표시', ov.pickupRing.visible && ov.brackets.every((b) => b.visible));
+
+  // 조건 일부만 충족 → 호박색
+  ov.update(baseState, 0, {
+    live: true,
+    preview: { load: girder, horiz: 1.2, vert: 9, horizOk: true, vertOk: false, eligible: false, ok: false },
+    release: null,
+  });
+  check('수직 미충족 시 조준점 호박색', ov.reticleRing.material === ov.mats.near);
+
+  // 매달림 + 목표 위 + 접지 가능 → 안착 링 녹색 + 간격선
+  const held = { id: 'g', pos: [15, 0.5, 10], size: [3, 0.6, 3], target: [15, 10], targetElev: 0 };
+  ov.update({ ...baseState, agents: [{ id: 'w', kind: 'worker', pos: [16, 10.5] }], safety: { agentHolds: [0], dangerRadius: 6 } }, 0, {
+    live: true,
+    preview: null,
+    release: { held, support: 0, bottomGap: 0.2, canRelease: true, onTarget: true, err: 0.3, tol: 1.5, maxGap: 0.5 },
+    time: 2,
+  });
+  check(
+    '안착 링 녹색 + 간격선 표시',
+    ov.settleRing.visible && ov.settleRing.material === ov.mats.ok && ov.gapLine.visible,
+  );
+  check(
+    '홀드 중 위험반경 링 적색 + 침입자 마커',
+    ov.dangerRing.visible && ov.dangerRing.material === ov.mats.danger &&
+      ov.intruderMarks[0].visible && Math.abs(ov.dangerRing.scale.x - 6) < 0.5,
+  );
+
+  // live=false → 전체 숨김
+  ov.update(baseState, 0, { live: false, preview: null, release: null });
+  check('계획 재생·리플레이 중 오버레이 숨김', ov.root.visible === false);
+
+  // ScreenWidgets: DOM 없는 환경에서 no-op
+  const sw = new ScreenWidgets(null);
+  sw.update(baseState, 0, null, {});
+  check('ScreenWidgets는 DOM 미지원 환경에서 no-op', sw.ok === false);
 }
 
 console.log('--- 카메라 리그·사운드 (헤드리스) ---');

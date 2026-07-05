@@ -105,6 +105,9 @@ export class Dashboard {
           <button class="dash-btn" data-action="camera">📷 카메라: 궤도 (C)</button>
           <button class="dash-btn" data-action="mute">🔊 소리 켬 (M)</button>
         </div>
+        <div class="dash-row" style="margin-top:8px">
+          <button class="dash-btn" data-action="assist">🎯 보조 UI 켬 (H)</button>
+        </div>
       </section>
 
       <section class="dash-section">
@@ -325,6 +328,12 @@ export class Dashboard {
     this.root.querySelector('[data-action="mute"]').textContent = muted
       ? '🔇 소리 꺼짐 (M)'
       : '🔊 소리 켬 (M)';
+  }
+
+  setAssist(on) {
+    this.root.querySelector('[data-action="assist"]').textContent = on
+      ? '🎯 보조 UI 켬 (H)'
+      : '🎯 보조 UI 꺼짐 (H)';
   }
 
   update(state, activeCrane, ui) {

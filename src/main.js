@@ -10,6 +10,8 @@ import { Effects } from './render/Effects.js';
 import { AgentView } from './render/AgentView.js';
 import { CameraRig } from './render/CameraRig.js';
 import { SoundView } from './render/SoundView.js';
+import { OverlayView } from './render/OverlayView.js';
+import { ScreenWidgets } from './render/ScreenWidgets.js';
 import { Simulation } from './sim/Simulation.js';
 import { Recorder, replay } from './sim/Recorder.js';
 import { KeyboardControl } from './control/KeyboardControl.js';
@@ -29,6 +31,11 @@ const keyboard = new KeyboardControl();
 const recorder = new Recorder();
 const cameraRig = new CameraRig(sceneManager.camera, sceneManager.controls);
 const sound = new SoundView();
+// 플레이 보조 오버레이 (P7.11): 씬 앵커 마커 + 화면 위젯 — H 토글
+const overlayView = new OverlayView();
+sceneManager.scene.add(overlayView.root);
+const widgets = new ScreenWidgets(document.getElementById('overlay'));
+let assistOn = true;
 // 브라우저 자동재생 정책: 첫 제스처에서 오디오 컨텍스트 생성
 for (const evt of ['pointerdown', 'keydown']) {
   window.addEventListener(evt, () => sound.unlock(), { once: true });
@@ -109,6 +116,11 @@ const dashboard = new Dashboard(dashboardRoot, SCENARIOS, {
     dashboard.setCameraMode(cameraRig.label);
   },
   mute: () => dashboard.setMuted(sound.toggleMute()),
+  assist: () => {
+    assistOn = !assistOn;
+    widgets.setEnabled(assistOn);
+    dashboard.setAssist(assistOn);
+  },
 });
 
 sceneManager.onGroundDoubleClick((pos) => {
@@ -192,6 +204,11 @@ window.addEventListener('keydown', (e) => {
     dashboard.setCameraMode(cameraRig.label);
   }
   if (e.code === 'KeyM') dashboard.setMuted(sound.toggleMute());
+  if (e.code === 'KeyH') {
+    assistOn = !assistOn;
+    widgets.setEnabled(assistOn);
+    dashboard.setAssist(assistOn);
+  }
 
   if (e.code === 'Tab') {
     activeCrane = (activeCrane + 1) % sim.getState().cranes.length;
@@ -310,9 +327,25 @@ function loop(now) {
   agentView.update(state.agents ?? [], state.time);
   effects.update(state); // 안착·주행 먼지 (상태 전이·시뮬 시간 결정론)
   cameraRig.update(state.cranes[activeCrane]);
-  sound.update(state, {
-    live: !playback && !planPlayer && !paused,
-    activeCrane,
+  const liveNow = !playback && !planPlayer && !paused;
+  sound.update(state, { live: liveNow, activeCrane });
+
+  // 보조 오버레이: 판정은 코어 질의(단일 경로) — 계획 재생 중엔 sim 상태와 무관하므로 질의 안 함
+  const attachP = liveNow ? sim.world.attachPreview(activeCrane) : null;
+  const releaseP = liveNow ? sim.world.releasePreview(activeCrane) : null;
+  overlayView.update(state, activeCrane, {
+    live: liveNow,
+    enabled: assistOn,
+    preview: attachP,
+    release: releaseP,
+    time: state.time,
+  });
+  widgets.update(state, activeCrane, sceneManager.camera, {
+    spec: sim.scenario.cranes[activeCrane],
+    scenario: sim.scenario,
+    live: liveNow,
+    preview: attachP,
+    release: releaseP,
   });
 
   sceneManager.render();
@@ -419,7 +452,7 @@ function drawHUD(state, command) {
     `${recLine}`,
     ``,
     `[주행] W/S 전·후진  A/D 좌·우회전    [팔] ←/→ 선회  ↑/↓ 기복  Q/E 권상·권하  Space 픽업`,
-    `N 다음 시나리오  O 리셋  Tab 크레인 전환  1~4 배속  C 카메라  M 소리  G 그리드  R 기록  P 리플레이`,
+    `N 다음 시나리오  O 리셋  Tab 크레인 전환  1~4 배속  C 카메라  M 소리  H 보조UI  G 그리드  R 기록  P 리플레이`,
     `마우스: 회전 | 휠: 줌 | 우클릭: 이동`,
   ].join('\n');
 }
