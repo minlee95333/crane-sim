@@ -5,12 +5,13 @@ import { Load } from './Load.js';
 import { Sway } from './Sway.js';
 import { craneGeometry, checkPair } from './Interference.js';
 
-// 픽업 판정 여유 (m)
-const ATTACH_MAX_HORIZ = 2.0; // 후크~부재 상면 중심 수평거리
-const ATTACH_MAX_VERT = 4.0; // 후크~부재 상면 수직거리 (슬링이 흡수)
-const RELEASE_MAX_GAP = 0.5; // 내려놓기 허용: 부재 바닥~지면 간격
+// 픽업 판정 여유 (m) — export: 보조 UI가 허용 범위를 그릴 때 동일 값 사용 (P7.11)
+export const ATTACH_MAX_HORIZ = 2.0; // 후크~부재 상면 중심 수평거리
+export const ATTACH_MAX_VERT = 4.0; // 후크~부재 상면 수직거리 (슬링이 흡수)
+export const RELEASE_MAX_GAP = 0.5; // 내려놓기 허용: 부재 바닥~지면 간격
 export const HOOK_GAP = 1.2; // 후크 블록 길이 (후크점~부재 상면)
-const PLACE_TOL = 1.5; // 목표 안착 허용 오차 (수평, m)
+export const PLACE_TOL = 1.5; // 목표 안착 허용 오차 (수평, m)
+const PREVIEW_NEAR_HORIZ = 12; // 조준 보조가 '근접 후보'를 보여주는 탐색 반경 (판정 아님)
 
 // 바람 외력 (T2-⑦, sway 켠 크레인만): F[N] ≈ WIND_ACCEL_COEF · v² · A  (≈ ½·ρ·Cd)
 export const WIND_ACCEL_COEF = 0.75;
@@ -465,13 +466,13 @@ export class World {
     }
     const held = this.loads.find((l) => l.state === 'hooked' && l.hookedBy === craneId);
 
-    if (held) return this.#release(crane, held);
+    if (held) return this.#release(craneId, crane, held);
     return this.#attach(craneId, crane);
   }
 
-  #attach(craneId, crane) {
+  /** 픽업 적격 후보 탐색 — #attach와 attachPreview가 공유하는 단일 판정 경로 */
+  #scanAttachEligible(crane) {
     const [hx, hy, hz] = crane.getHookPos();
-    // 후크 근처의 지상 부재 탐색
     let best = null;
     let bestDist = Infinity;
     for (const load of this.loads) {
@@ -485,23 +486,77 @@ export class World {
         bestDist = horiz;
       }
     }
+    return best;
+  }
+
+  /** 픽업 차단 사유 — 적격 후보에 대한 규칙 검사 (#attach와 공유) */
+  #attachBlock(load) {
+    // 시공순서: 최종 안착(건립) 단계에만 적용 — 하역·야적 이동은 선행 무관
+    if (load.finalLeg) {
+      const unmet = load.dependsOn.filter(
+        (id) => this.loads.find((l) => l.id === id)?.state !== 'placed',
+      );
+      if (unmet.length > 0) return { reason: 'precedence', unmet };
+    }
+    // 바람: 작업한계풍속 초과 시 신규 인양 금지
+    if (this.windDef && this.windSpeed > this.windLimitFor(load)) {
+      return { reason: 'wind', limit: this.windLimitFor(load) };
+    }
+    return null;
+  }
+
+  /**
+   * 픽업 예비 판정 (순수 질의 — 상태 불변). 보조 UI 조준용.
+   * 적격 후보가 없으면 근접(PREVIEW_NEAR_HORIZ 내) 최근접 지상 부재를 힌트로 반환.
+   * @returns {{ load, horiz, vert, horizOk, vertOk, eligible, blockReason, block, ok }|null}
+   */
+  attachPreview(craneId) {
+    const crane = this.cranes[craneId];
+    if (!crane) return null;
+    const [hx, hy, hz] = crane.getHookPos();
+    const eligible = this.#scanAttachEligible(crane);
+    let target = eligible;
+    if (!target) {
+      let bestDist = PREVIEW_NEAR_HORIZ;
+      for (const load of this.loads) {
+        if (load.state !== 'ground') continue;
+        const horiz = Math.hypot(load.pos[0] - hx, load.pos[2] - hz);
+        if (horiz < bestDist) {
+          target = load;
+          bestDist = horiz;
+        }
+      }
+    }
+    if (!target) return null;
+    const horiz = Math.hypot(target.pos[0] - hx, target.pos[2] - hz);
+    const vert = Math.abs(hy - target.topY);
+    const block = this.#attachBlock(target);
+    return {
+      load: target,
+      horiz,
+      vert,
+      horizOk: horiz <= ATTACH_MAX_HORIZ,
+      vertOk: vert <= ATTACH_MAX_VERT,
+      eligible: target === eligible,
+      blockReason: block?.reason ?? null,
+      block,
+      ok: target === eligible && !block,
+    };
+  }
+
+  #attach(craneId, crane) {
+    const best = this.#scanAttachEligible(crane);
     if (!best) {
       this.lastEvent = '픽업 실패: 근처에 부재 없음 (후크를 부재 위로)';
       return { ok: false, msg: this.lastEvent };
     }
-    // 시공순서: 최종 안착(건립) 단계에만 적용 — 하역·야적 이동은 선행 무관
-    if (best.finalLeg) {
-      const unmet = best.dependsOn.filter(
-        (id) => this.loads.find((l) => l.id === id)?.state !== 'placed',
-      );
-      if (unmet.length > 0) {
-        this.lastEvent = `픽업 불가: 선행 부재 미완 (${unmet.join(', ')})`;
-        return { ok: false, msg: this.lastEvent };
-      }
+    const block = this.#attachBlock(best);
+    if (block?.reason === 'precedence') {
+      this.lastEvent = `픽업 불가: 선행 부재 미완 (${block.unmet.join(', ')})`;
+      return { ok: false, msg: this.lastEvent };
     }
-    // 바람: 작업한계풍속 초과 시 신규 인양 금지
-    if (this.windDef && this.windSpeed > this.windLimitFor(best)) {
-      this.lastEvent = `픽업 불가: 풍속 초과 (${this.windSpeed.toFixed(1)} > ${this.windLimitFor(best)} m/s)`;
+    if (block?.reason === 'wind') {
+      this.lastEvent = `픽업 불가: 풍속 초과 (${this.windSpeed.toFixed(1)} > ${block.limit} m/s)`;
       return { ok: false, msg: this.lastEvent };
     }
     // 리깅 시간이 정의된 부재는 줄걸이 작업(rigging)부터 — 크레인은 그동안 동결
@@ -535,16 +590,42 @@ export class World {
     return { ok: true, msg: this.lastEvent };
   }
 
-  #release(crane, held) {
+  /**
+   * 해제(안착) 예비 판정 (순수 질의 — 상태 불변). 보조 UI 안착 가이드용.
+   * @returns {{ held, support, bottomGap, canRelease, onTarget, err, tol, maxGap }|null}
+   *   매달린 부재 없으면 null
+   */
+  releasePreview(craneId) {
+    const held = this.loads.find((l) => l.state === 'hooked' && l.hookedBy === craneId);
+    if (!held) return null;
     // 지지면: 목표 위(허용오차 내)면 목표 바닥고(기둥 위 6m 등), 아니면 지면(0)
     let support = 0;
+    let onTarget = false;
+    let err = null;
     if (held.target) {
-      const err = Math.hypot(held.pos[0] - held.target[0], held.pos[2] - held.target[1]);
-      if (err <= PLACE_TOL) support = held.targetElev;
+      err = Math.hypot(held.pos[0] - held.target[0], held.pos[2] - held.target[1]);
+      if (err <= PLACE_TOL) {
+        support = held.targetElev;
+        onTarget = true;
+      }
     }
     const bottomGap = held.bottomY - support;
-    if (bottomGap > RELEASE_MAX_GAP) {
-      this.lastEvent = `해제 불가: 공중 해제 금지 (지지면과 ${bottomGap.toFixed(1)}m)`;
+    return {
+      held,
+      support,
+      bottomGap,
+      canRelease: bottomGap <= RELEASE_MAX_GAP,
+      onTarget,
+      err,
+      tol: PLACE_TOL,
+      maxGap: RELEASE_MAX_GAP,
+    };
+  }
+
+  #release(craneId, crane, held) {
+    const preview = this.releasePreview(craneId);
+    if (!preview.canRelease) {
+      this.lastEvent = `해제 불가: 공중 해제 금지 (지지면과 ${preview.bottomGap.toFixed(1)}m)`;
       return { ok: false, msg: this.lastEvent };
     }
     // 해체 시간이 정의된 부재는 해체 작업(derigging)부터 — 크레인은 그동안 동결
@@ -636,6 +717,7 @@ export class World {
         agentHolds: [...this.agentHolds],
         agentHoldCount: this.agentHoldCount,
         agentHoldTime: this.agentHoldTime,
+        dangerRadius: this.agentRules.dangerRadius,
       },
       lastEvent: this.lastEvent,
     };
