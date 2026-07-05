@@ -137,9 +137,10 @@ export class SoundView {
     this.#ramp(this.winchGain.gain, hoistV > 0.01 ? 0.05 : 0);
     this.#ramp(this.winchOsc.frequency, 110 + hoistV * 190);
 
-    // 경고: 리미터·크레인 물리 간섭 — 시뮬 시간 기반 비프 패턴 (결정론)
+    // 경고: 리미터·크레인 물리 간섭·지상 접근 홀드 — 시뮬 시간 기반 비프 패턴 (결정론)
     const clash = (state.safety?.cranePairs ?? []).some((p) => p.clash);
-    const alarmOn = (crane.extra?.limiterActive || clash) && state.time % 0.5 < 0.22;
+    const hold = (state.safety?.agentHolds ?? []).includes(activeCrane);
+    const alarmOn = (crane.extra?.limiterActive || clash || hold) && state.time % 0.5 < 0.22;
     this.#ramp(this.alarmGain.gain, alarmOn ? 0.09 : 0);
 
     // 원샷: 부재 상태 전이 (픽업 클링크 / 안착 썸)

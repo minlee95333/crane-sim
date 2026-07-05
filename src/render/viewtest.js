@@ -6,6 +6,7 @@ import { SiteView } from './SiteView.js';
 import { LoadView } from './LoadView.js';
 import { CameraRig } from './CameraRig.js';
 import { SoundView } from './SoundView.js';
+import { AgentView } from './AgentView.js';
 import { Simulation } from '../sim/Simulation.js';
 import { SCENARIOS } from '../../data/scenarios.js';
 
@@ -122,6 +123,28 @@ console.log('--- 부재 형상·슬링·리깅 연출 ---');
   lv.update([placedAt], [], [craneState], 4);
   const done = lv.meshes.get('hb').position.clone();
   check('이즈 완료 후 코어 위치와 일치', Math.abs(done.x - 12) < 1e-9 && Math.abs(done.y - 0.4) < 1e-9);
+}
+
+console.log('--- 지상 에이전트 뷰 ---');
+{
+  const agents = [
+    { id: 'W-1', kind: 'worker', pos: [5, 3], heading: [1, 0], moving: true, waiting: false },
+    { id: 'V-1', kind: 'vehicle', pos: [-8, 2], heading: [0, 1], moving: true, waiting: false },
+  ];
+  const av = new AgentView(agents);
+  av.update(agents, 1.0);
+  const worker = av.figures.get('W-1').group;
+  const vehicle = av.figures.get('V-1').group;
+  check(
+    '작업자·차량이 코어 좌표에 배치',
+    worker.position.x === 5 && worker.position.z === 3 &&
+      vehicle.position.x === -8 && vehicle.position.z === 2,
+  );
+  check(
+    '차량이 헤딩(+z) 방향으로 회전',
+    Math.abs(vehicle.rotation.y - -Math.PI / 2) < 1e-9,
+  );
+  check('보행 중 바운스 모션 적용', worker.scale.y !== 1);
 }
 
 console.log('--- 카메라 리그·사운드 (헤드리스) ---');

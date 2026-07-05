@@ -336,6 +336,7 @@ export class Dashboard {
       (safety.collisionIds?.length ?? 0) > 0 ||
       safety.zoneViolation ||
       (safety.cranePairs ?? []).some((p) => p.clash) ||
+      (safety.agentHolds?.length ?? 0) > 0 ||
       crane.extra.limiterActive;
 
     this.#text('time', `${state.time.toFixed(1)} s`);

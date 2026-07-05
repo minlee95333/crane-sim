@@ -7,6 +7,7 @@ import { TowerCraneView } from './render/TowerCraneView.js';
 import { LoadView } from './render/LoadView.js';
 import { SiteView } from './render/SiteView.js';
 import { Effects } from './render/Effects.js';
+import { AgentView } from './render/AgentView.js';
 import { CameraRig } from './render/CameraRig.js';
 import { SoundView } from './render/SoundView.js';
 import { Simulation } from './sim/Simulation.js';
@@ -41,6 +42,7 @@ let sim = null;
 let craneViews = [];
 let loadView = null;
 let siteView = null;
+let agentView = null;
 let effects = null;
 let activeCrane = 0; // 조종 중인 크레인 (Tab 전환)
 let paused = false;
@@ -129,6 +131,7 @@ function loadScenario(idx) {
   for (const v of craneViews) sceneManager.scene.remove(v.root);
   if (loadView) sceneManager.scene.remove(loadView.root);
   if (siteView) sceneManager.scene.remove(siteView.root);
+  if (agentView) sceneManager.scene.remove(agentView.root);
   if (effects) effects.dispose();
 
   sim = new Simulation(entry.scenario);
@@ -151,6 +154,8 @@ function loadScenario(idx) {
   sceneManager.scene.add(loadView.root);
   siteView = new SiteView(state, entry.scenario);
   sceneManager.scene.add(siteView.root);
+  agentView = new AgentView(state.agents ?? []);
+  sceneManager.scene.add(agentView.root);
   effects = new Effects(sceneManager.scene);
   const framePoints = [
     ...entry.scenario.cranes.map((c) => c.basePos),
@@ -302,6 +307,7 @@ function loop(now) {
   state.cranes.forEach((cs, i) => craneViews[i].update(cs, state.time));
   siteView.update(state); // 트럭 등 현장 상태 (부재 동반 이동은 코어가 처리)
   loadView.update(state.loads, state.trucks, state.cranes, state.time);
+  agentView.update(state.agents ?? [], state.time);
   effects.update(state); // 안착·주행 먼지 (상태 전이·시뮬 시간 결정론)
   cameraRig.update(state.cranes[activeCrane]);
   sound.update(state, {
@@ -363,6 +369,12 @@ function drawHUD(state, command) {
     (s.collisionIds.length > 0 ? ` ⚠충돌중(${s.collisionIds.join(',')})` : '') +
     (s.zoneViolation ? ' ⚠금지구역!' : '') +
     (clashNow ? ' ⚠크레인간섭!' : '');
+  const holdLine = (s.agentHolds ?? []).includes(activeCrane)
+    ? '\n⛔ 지상 인원·장비 접근 — 작업 일시정지 (위험반경 통과 대기)'
+    : '';
+  const agentInfo = (state.agents ?? []).length > 0
+    ? ` · 홀드 ${s.agentHoldCount ?? 0}회 ${(s.agentHoldTime ?? 0).toFixed(0)}s`
+    : '';
   const clearanceInfo =
     state.cranes.length > 1 && Number.isFinite(s.craneMinClearance)
       ? ` · 붐이격 ${s.craneMinClearance.toFixed(1)}m · 크레인충돌 ${s.craneClashCount ?? 0}회`
@@ -399,10 +411,10 @@ function drawHUD(state, command) {
     `후크높이 : ${c.hookHeight.toFixed(2)} m${swayLine}${windLine}`,
     `정격하중 : ${c.capacity.toFixed(1)} t`,
     `인양하중 : ${c.loadMass > 0 ? c.loadMass.toFixed(1) + ' t' : '(없음)'}`,
-    `하중률   : ${ratioPct}%${c.loadRatio >= 0.9 && c.loadMass > 0 ? ' ⚠' : ''}${limiterMsg}${rigLine}`,
+    `하중률   : ${ratioPct}%${c.loadRatio >= 0.9 && c.loadMass > 0 ? ' ⚠' : ''}${limiterMsg}${rigLine}${holdLine}`,
     ``,
     missionLine,
-    `안전     : 충돌 ${s.collisionCount}회 · 금지구역 ${s.violationCount}회${clearanceInfo}${safetyWarn}`,
+    `안전     : 충돌 ${s.collisionCount}회 · 금지구역 ${s.violationCount}회${clearanceInfo}${agentInfo}${safetyWarn}`,
     `이벤트   : ${state.lastEvent ?? '-'}`,
     `${recLine}`,
     ``,
