@@ -4,6 +4,7 @@
 import { Load } from './Load.js';
 import { Sway } from './Sway.js';
 import { craneGeometry, checkPair } from './Interference.js';
+import { checkStability } from './Stability.js';
 
 // 픽업 판정 여유 (m) — export: 보조 UI가 허용 범위를 그릴 때 동일 값 사용 (P7.11)
 export const ATTACH_MAX_HORIZ = 2.0; // 후크~부재 상면 중심 수평거리
@@ -764,11 +765,32 @@ export class World {
     return targets.length > 0 && targets.every((l) => l.state === 'placed');
   }
 
+  /**
+   * 매달린 하중 기준 준정적 전도 안전율 (순수 질의).
+   * 하중이 없거나 안정성 제원이 없는 크레인은 null.
+   * @returns {number|null}
+   */
+  stabilityPreview(craneId) {
+    const crane = this.cranes[craneId];
+    const held = this.loads.find((l) => l.state === 'hooked' && l.hookedBy === craneId);
+    if (!crane || !held) return null;
+    const result = checkStability({
+      spec: crane.spec,
+      boomLength: crane.boomLength ?? crane.spec.geometry?.boomLength,
+      radius: crane.getRadius(),
+      loadMass: held.mass,
+    });
+    return result.skipped ? null : result.tippingMargin;
+  }
+
   /** 전체 상태 스냅샷 (렌더·관측 공용) */
   getState() {
     return {
       time: this.time,
-      cranes: this.cranes.map((c) => c.getState()),
+      cranes: this.cranes.map((c, i) => ({
+        ...c.getState(),
+        stabilityFactor: this.stabilityPreview(i),
+      })),
       loads: this.loads.map((l) => l.getState()),
       obstacles: this.obstacles.map((o) => ({ id: o.id, pos: [...o.pos], size: [...o.size] })),
       noFlyZones: this.noFlyZones.map((z) => ({ id: z.id, min: [...z.min], max: [...z.max] })),

@@ -11,6 +11,13 @@ const _v = new THREE.Vector3();
 
 const css = (n) => `#${n.toString(16).padStart(6, '0')}`;
 
+/** 코어가 계산한 전도 안전율의 표시 색상. */
+export function stabilityColor(factor) {
+  if (factor < 1.0) return '#e04a34';
+  if (factor < 1.33) return '#e0a53a';
+  return '#3ecf6e';
+}
+
 export class ScreenWidgets {
   /** @param {HTMLElement|null} container #overlay */
   constructor(container) {
@@ -19,7 +26,7 @@ export class ScreenWidgets {
     if (!this.ok) return;
     this.container = container;
     container.innerHTML = `
-      <div class="ov-gauge"><canvas width="196" height="120"></canvas></div>
+      <div class="ov-gauge"><canvas width="196" height="136"></canvas></div>
       <div class="ov-side">
         <div class="ov-wind" hidden><span class="ov-wind-arrow">➤</span><span class="ov-wind-text"></span></div>
         <div class="ov-minimap"><canvas width="208" height="164"></canvas></div>
@@ -141,6 +148,16 @@ export class ScreenWidgets {
       ctx.fillText(`하중 ${crane.loadMass.toFixed(1)}t (${(ratio * 100).toFixed(0)}%)`, 34, 10);
     } else {
       ctx.fillText('무부하', 34, 10);
+    }
+    // 전도 안전율: 계산은 코어 World.stabilityPreview만 담당하고 렌더는 값·색만 표시
+    if (Number.isFinite(crane.stabilityFactor)) {
+      const color = stabilityColor(crane.stabilityFactor);
+      ctx.fillStyle = color;
+      ctx.fillRect(34, H - 25, W - 44, 5);
+      ctx.fillStyle = color;
+      ctx.textAlign = 'right';
+      ctx.fillText(`전도 SF ${crane.stabilityFactor.toFixed(2)}`, W - 10, 22);
+      ctx.textAlign = 'left';
     }
     ctx.save();
     ctx.translate(10, H / 2);

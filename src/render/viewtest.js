@@ -8,7 +8,7 @@ import { CameraRig } from './CameraRig.js';
 import { SoundView } from './SoundView.js';
 import { AgentView } from './AgentView.js';
 import { OverlayView } from './OverlayView.js';
-import { ScreenWidgets } from './ScreenWidgets.js';
+import { ScreenWidgets, stabilityColor } from './ScreenWidgets.js';
 import { Simulation } from '../sim/Simulation.js';
 import { SCENARIOS } from '../../data/scenarios.js';
 
@@ -239,6 +239,9 @@ console.log('--- 보조 오버레이 (씬 앵커) ---');
   const sw = new ScreenWidgets(null);
   sw.update(baseState, 0, null, {});
   check('ScreenWidgets는 DOM 미지원 환경에서 no-op', sw.ok === false);
+  check('전도 안전율 1.33 이상은 녹색', stabilityColor(1.33) === '#3ecf6e');
+  check('전도 안전율 1.0 이상 1.33 미만은 호박색', stabilityColor(1.0) === '#e0a53a');
+  check('전도 안전율 1.0 미만은 적색', stabilityColor(0.999) === '#e04a34');
 }
 
 console.log('--- 카메라 리그·사운드 (헤드리스) ---');
