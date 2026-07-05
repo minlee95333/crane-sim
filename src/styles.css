@@ -274,6 +274,21 @@ button, select { font: inherit; }
 .ov-label.ok { color: #b8f4cd; border-color: rgba(62, 207, 110, 0.55); }
 .ov-label.near { color: #ffe0a8; border-color: rgba(224, 165, 58, 0.55); }
 
+.ov-target-arrow {
+  position: absolute;
+  width: 34px;
+  height: 34px;
+  line-height: 31px;
+  text-align: center;
+  font-size: 25px;
+  color: #8fd8a8;
+  background: rgba(13, 18, 24, 0.82);
+  border: 1px solid rgba(62, 207, 110, 0.6);
+  border-radius: 50%;
+  transform-origin: center;
+}
+.ov-target-arrow.target { color: #ffcf7a; border-color: rgba(224, 165, 58, 0.7); }
+
 /* hidden 속성이 author display 규칙에 지지 않도록 + 대시보드는 오버레이 위 */
 #overlay [hidden] { display: none !important; }
 #dashboard { z-index: 10; }

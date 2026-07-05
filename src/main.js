@@ -333,6 +333,12 @@ function loop(now) {
   // 보조 오버레이: 판정은 코어 질의(단일 경로) — 계획 재생 중엔 sim 상태와 무관하므로 질의 안 함
   const attachP = liveNow ? sim.world.attachPreview(activeCrane) : null;
   const releaseP = liveNow ? sim.world.releasePreview(activeCrane) : null;
+  const nfzP = liveNow && assistOn ? sim.world.nfzProximity(activeCrane) : null;
+  const drivingNow = Math.abs(command.drive ?? 0) > 0 || Math.abs(state.cranes[activeCrane]?.extra?.driveVel ?? 0) > 0.05;
+  const driveP = liveNow && releaseP && assistOn && drivingNow
+    ? sim.world.drivePathPreview(activeCrane, command.steer)
+    : null;
+  const guidanceP = liveNow && assistOn ? sim.world.guidanceTarget(activeCrane) : null;
   overlayView.update(state, activeCrane, {
     live: liveNow,
     enabled: assistOn,
@@ -340,6 +346,8 @@ function loop(now) {
     release: releaseP,
     sweep: liveNow && releaseP && assistOn ? sim.world.sweepPreview(activeCrane) : null,
     readiness: liveNow && !releaseP && assistOn ? sim.world.liftReadiness() : null,
+    nfz: nfzP,
+    drivePath: driveP,
     time: state.time,
   });
   widgets.update(state, activeCrane, sceneManager.camera, {
@@ -348,6 +356,8 @@ function loop(now) {
     live: liveNow,
     preview: attachP,
     release: releaseP,
+    nfz: nfzP,
+    guidance: guidanceP,
   });
 
   sceneManager.render();

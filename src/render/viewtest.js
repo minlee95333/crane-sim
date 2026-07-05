@@ -8,7 +8,7 @@ import { CameraRig } from './CameraRig.js';
 import { SoundView } from './SoundView.js';
 import { AgentView } from './AgentView.js';
 import { OverlayView } from './OverlayView.js';
-import { ScreenWidgets, stabilityColor } from './ScreenWidgets.js';
+import { ScreenWidgets, projectEdgeArrow, selectBanner, stabilityColor } from './ScreenWidgets.js';
 import { Simulation } from '../sim/Simulation.js';
 import { SCENARIOS } from '../../data/scenarios.js';
 
@@ -214,6 +214,27 @@ console.log('--- 보조 오버레이 (씬 앵커) ---');
       ov.sweepHazards[0].visible,
   );
 
+  // NFZ 접근 테두리 + 캐리 경로(안전 녹/차단 적)
+  const driveSamples = Array.from({ length: 21 }, (_, i) => ({
+    x: i,
+    z: i * 0.1,
+    heading: 0,
+    blocked: i >= 14,
+  }));
+  ov.update({ cranes: [heldCrane], agents: [], safety: {} }, 0, {
+    live: true,
+    release: { held, support: 0, bottomGap: 3, canRelease: false, onTarget: false, err: 9, tol: 1.5, maxGap: 0.5 },
+    nfz: { zoneId: 'z1', distance: 2, near: true, min: [12, -4], max: [18, 4] },
+    drivePath: { samples: driveSamples },
+  });
+  const driveColors = ov.driveGeo.getAttribute('color');
+  check('NFZ 3m 이내 구역 테두리 하이라이트', ov.nfzOutline.visible);
+  check(
+    '캐리 경로 점선 표시·차단 샘플 적색',
+    ov.driveLine.visible && ov.drivePoints.visible &&
+      driveColors.getY(5) > driveColors.getX(5) && driveColors.getX(18) > driveColors.getY(18),
+  );
+
   // 미션 마커: ready=녹 / 잠김=회백
   ov.update({ cranes: [heldCrane], agents: [], safety: {} }, 0, {
     live: true,
@@ -242,6 +263,28 @@ console.log('--- 보조 오버레이 (씬 앵커) ---');
   check('전도 안전율 1.33 이상은 녹색', stabilityColor(1.33) === '#3ecf6e');
   check('전도 안전율 1.0 이상 1.33 미만은 호박색', stabilityColor(1.0) === '#e0a53a');
   check('전도 안전율 1.0 미만은 적색', stabilityColor(0.999) === '#e04a34');
+
+  const arrowCamera = new THREE.PerspectiveCamera(60, 16 / 9, 0.1, 100);
+  arrowCamera.position.set(0, 0, 0);
+  arrowCamera.lookAt(0, 0, -1);
+  arrowCamera.updateMatrixWorld();
+  arrowCamera.updateProjectionMatrix();
+  check('화면 안 목표는 가장자리 화살표 없음', projectEdgeArrow([0, 0, -10], arrowCamera, 1200, 800) === null);
+  const edge = projectEdgeArrow([20, 0, -10], arrowCamera, 1200, 800);
+  check('화면 밖 목표는 가장자리 위치·방향 산출', edge && edge.x > 600 && Number.isFinite(edge.angle));
+  const bannerState = { loads: [], safety: { agentHolds: [] }, wind: null };
+  check(
+    'NFZ 접근 배너는 리깅보다 우선',
+    selectBanner(
+      { ...bannerState, loads: [{ hookedBy: 0, state: 'rigging', rigTime: 10, rigRemain: 5 }] },
+      0, { extra: {} }, true, { near: true, distance: 2 },
+    ).html.includes('금지구역'),
+  );
+  check(
+    '홀드·리미터는 NFZ 접근 배너보다 우선',
+    selectBanner({ ...bannerState, safety: { agentHolds: [0] } }, 0, { extra: { limiterActive: true } }, true,
+      { near: true, distance: 2 }).html.includes('지상 인원'),
+  );
 }
 
 console.log('--- 카메라 리그·사운드 (헤드리스) ---');

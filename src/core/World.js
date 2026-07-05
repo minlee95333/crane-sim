@@ -304,9 +304,14 @@ export class World {
    */
   #baseBlocked(ci) {
     const me = this.cranes[ci];
+    return this.#baseBlockedAt(ci, me.basePos[0], me.basePos[2]);
+  }
+
+  /** #baseBlocked와 주행 예고가 공유하는 임의 위치 차단 판정. */
+  #baseBlockedAt(ci, x, z) {
+    const me = this.cranes[ci];
     const g = me.spec.geometry;
     const r = g.bodyRadius ?? Math.max(g.bodyWidth ?? 2, g.bodyLength ?? 2) / 2;
-    const [x, , z] = me.basePos;
 
     // 현장 경계
     const s = this.siteBounds;
@@ -608,6 +613,103 @@ export class World {
   }
 
   /**
+   * 매달린 하중 중심점과 가장 가까운 NFZ 사각형 사이 거리 (순수 질의).
+   * #checkSafety의 중심점 포함 규칙과 같아서 구역 내부는 distance=0이다.
+   * @returns {{zoneId:string, distance:number, min:number[], max:number[], near:boolean}|null}
+   */
+  nfzProximity(craneId, threshold = 3) {
+    const held = this.loads.find((l) => l.state === 'hooked' && l.hookedBy === craneId);
+    if (!this.cranes[craneId] || !held || this.noFlyZones.length === 0) return null;
+    let nearest = null;
+    for (const zone of this.noFlyZones) {
+      const dx = Math.max(zone.min[0] - held.pos[0], 0, held.pos[0] - zone.max[0]);
+      const dz = Math.max(zone.min[1] - held.pos[2], 0, held.pos[2] - zone.max[1]);
+      const distance = Math.hypot(dx, dz);
+      if (!nearest || distance < nearest.distance) {
+        nearest = {
+          zoneId: zone.id,
+          distance,
+          min: [...zone.min],
+          max: [...zone.max],
+          near: distance <= threshold,
+        };
+      }
+    }
+    return nearest;
+  }
+
+  /**
+   * 현재 언더캐리지 헤딩·조향 입력으로 예상되는 주행 경로 (순수 질의).
+   * 각 위치의 blocked는 실제 주행과 동일한 #baseBlockedAt 규칙을 사용한다.
+   * @returns {{samples:{x:number,z:number,heading:number,blocked:boolean}[]}|null}
+   */
+  drivePathPreview(craneId, steer = 0, distance = 20, step = 1) {
+    const crane = this.cranes[craneId];
+    const held = this.loads.find((l) => l.state === 'hooked' && l.hookedBy === craneId);
+    if (!crane || !held || crane.driveYaw == null) return null;
+    const ds = Math.max(0.25, step);
+    const maxSpeed = crane.spec.planning?.driveSpeed ?? crane.spec.planning?.travelSpeed ?? 1;
+    const steerRate = crane.spec.planning?.steerRate ?? 0.14;
+    const curvature = Math.max(-1, Math.min(1, steer)) * steerRate / Math.max(maxSpeed, 1e-6);
+    let x = crane.basePos[0];
+    let z = crane.basePos[2];
+    let heading = crane.driveYaw;
+    const samples = [{ x, z, heading, blocked: this.#baseBlockedAt(craneId, x, z) }];
+    for (let traveled = ds; traveled <= distance + 1e-9; traveled += ds) {
+      heading += curvature * ds;
+      x += Math.cos(heading) * ds;
+      z += Math.sin(heading) * ds;
+      samples.push({ x, z, heading, blocked: this.#baseBlockedAt(craneId, x, z) });
+    }
+    return { samples };
+  }
+
+  /**
+   * 현재 하중에서 정격과 하중이 같아지는 최대 반경 (순수 질의).
+   * 현재 캐리 감격이 적용 중이면 같은 감격계수를 반영한다.
+   * @returns {number|null}
+   */
+  limitRadius(craneId) {
+    const crane = this.cranes[craneId];
+    const held = this.loads.find((l) => l.state === 'hooked' && l.hookedBy === craneId);
+    if (!crane || !held || !crane.getRadiusRange) return null;
+    const [rMin, rMax] = crane.getRadiusRange();
+    const factor = crane.driveVel != null && Math.abs(crane.driveVel) > 0.05
+      ? crane.spec.rating?.pickCarryFactor ?? 0.66
+      : 1;
+    const capacity = (r) => crane.capacityAtRadius(r) * factor;
+    if (capacity(rMin) < held.mass) return null;
+    if (capacity(rMax) >= held.mass) return rMax;
+    let lo = rMin;
+    let hi = rMax;
+    for (let i = 0; i < 48; i++) {
+      const mid = (lo + hi) / 2;
+      if (capacity(mid) >= held.mass) lo = mid;
+      else hi = mid;
+    }
+    return lo;
+  }
+
+  /**
+   * 화면 방향 안내 대상 (순수 질의): 매달림 중에는 목표, 빈 후크면 추천 픽업 후보.
+   * @returns {{kind:'target'|'load', id:string, pos:number[]}|null}
+   */
+  guidanceTarget(craneId) {
+    const held = this.loads.find((l) => l.state === 'hooked' && l.hookedBy === craneId);
+    if (held?.target) {
+      return {
+        kind: 'target',
+        id: held.id,
+        pos: [held.target[0], held.targetElev ?? 0, held.target[1]],
+      };
+    }
+    const candidate = this.attachPreview(craneId)?.load;
+    return candidate
+      ? { kind: 'load', id: candidate.id, pos: [...candidate.pos] }
+      : null;
+  }
+
+  /**
    * 미션 가이드 (순수 질의): 목표가 있는 지상 부재의 픽업 준비 상태 — 선행 충족 여부.
    * ready=true인 부재가 "지금 들 수 있는" 후보다 (#attachBlock과 같은 unmet 규칙).
    */
@@ -790,6 +892,7 @@ export class World {
       cranes: this.cranes.map((c, i) => ({
         ...c.getState(),
         stabilityFactor: this.stabilityPreview(i),
+        limitRadius: this.limitRadius(i),
       })),
       loads: this.loads.map((l) => l.getState()),
       obstacles: this.obstacles.map((o) => ({ id: o.id, pos: [...o.pos], size: [...o.size] })),

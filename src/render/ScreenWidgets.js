@@ -18,6 +18,59 @@ export function stabilityColor(factor) {
   return '#3ecf6e';
 }
 
+/** 월드 목표를 화면 가장자리 화살표 위치·각도로 투영한다. 화면 안이면 null. */
+export function projectEdgeArrow(pos, camera, width, height, rightInset = 368) {
+  const p = new THREE.Vector3(pos[0], pos[1], pos[2]).project(camera);
+  const behind = p.z > 1;
+  let dx = behind ? -p.x : p.x;
+  let dy = behind ? p.y : -p.y;
+  if (!behind && p.z >= -1 && Math.abs(p.x) <= 0.9 && Math.abs(p.y) <= 0.9) return null;
+  if (Math.abs(dx) + Math.abs(dy) < 1e-9) dy = -1;
+  const maxX = Math.max(width - rightInset - 28, 28);
+  const cx = Math.min(width / 2, maxX / 2);
+  const cy = height / 2;
+  const sx = Math.max(cx - 24, 1);
+  const sy = Math.max(cy - 24, 1);
+  const scale = 1 / Math.max(Math.abs(dx) / sx, Math.abs(dy) / sy);
+  return {
+    x: Math.min(Math.max(cx + dx * scale, 24), maxX),
+    y: Math.min(Math.max(cy + dy * scale, 24), height - 24),
+    angle: Math.atan2(dy, dx),
+  };
+}
+
+/** 중앙 배너 우선순위 선택. */
+export function selectBanner(state, activeCrane, crane, live, nfz) {
+  if (!live) return { html: null, cls: '' };
+  const rigging = state.loads.find(
+    (l) => l.hookedBy === activeCrane && (l.state === 'rigging' || l.state === 'derigging'),
+  );
+  if ((state.safety?.agentHolds ?? []).includes(activeCrane)) {
+    return { html: '⛔ 지상 인원·장비 접근 — 작업 일시정지', cls: 'danger' };
+  }
+  if (crane.extra?.limiterActive) {
+    return { html: '⚠ 모멘트 리미터 작동 — 반경을 줄이세요', cls: 'danger' };
+  }
+  if (nfz?.near) {
+    return { html: `⚠ 금지구역 접근 (${nfz.distance.toFixed(1)}m) — 경로를 변경하세요`, cls: 'danger' };
+  }
+  if (rigging) {
+    const total = rigging.state === 'rigging' ? rigging.rigTime : rigging.derigTime;
+    const pct = total > 0 ? Math.round((1 - rigging.rigRemain / total) * 100) : 0;
+    return {
+      html: `🔧 ${rigging.state === 'rigging' ? '줄걸이' : '해체'} 작업 중 ${pct}% <span class="ov-progress"><span style="width:${pct}%"></span></span>`,
+      cls: 'work',
+    };
+  }
+  if (state.wind?.maxOperating && state.wind.speed > state.wind.maxOperating) {
+    return {
+      html: `⛔ 풍속 초과 (${state.wind.speed.toFixed(1)} > ${state.wind.maxOperating} m/s) — 작업 중지`,
+      cls: 'danger',
+    };
+  }
+  return { html: null, cls: '' };
+}
+
 export class ScreenWidgets {
   /** @param {HTMLElement|null} container #overlay */
   constructor(container) {
@@ -33,6 +86,7 @@ export class ScreenWidgets {
       </div>
       <div class="ov-banner" hidden></div>
       <div class="ov-label" hidden></div>
+      <div class="ov-target-arrow" hidden>➤</div>
     `;
     this.gaugeCanvas = container.querySelector('.ov-gauge canvas');
     this.mapCanvas = container.querySelector('.ov-minimap canvas');
@@ -41,6 +95,7 @@ export class ScreenWidgets {
     this.windText = container.querySelector('.ov-wind-text');
     this.banner = container.querySelector('.ov-banner');
     this.label = container.querySelector('.ov-label');
+    this.targetArrow = container.querySelector('.ov-target-arrow');
     this._lastBanner = null;
     this._lastLabel = null;
   }
@@ -55,21 +110,30 @@ export class ScreenWidgets {
    * @param {Object} state world.getState()
    * @param {number} activeCrane
    * @param {THREE.Camera} camera 거리 라벨 투영·미니맵 시야 부채꼴용
-   * @param {Object} opts { spec: 활성 크레인 제원, scenario, live, preview, release }
+   * @param {Object} opts core 질의 결과와 라이브 표시 상태
    */
-  update(state, activeCrane, camera, { spec = null, scenario = null, live = true, preview = null, release = null } = {}) {
+  update(state, activeCrane, camera, {
+    spec = null,
+    scenario = null,
+    live = true,
+    preview = null,
+    release = null,
+    nfz = null,
+    guidance = null,
+  } = {}) {
     if (!this.ok || !this.enabled) return;
     const crane = state.cranes?.[activeCrane];
     if (!crane) return;
-    this.#drawGauge(crane, spec);
+    this.#drawGauge(crane, spec, live);
     this.#drawMinimap(state, activeCrane, camera, scenario);
     this.#updateWind(state);
-    this.#updateBanner(state, activeCrane, crane, live);
+    this.#updateBanner(state, activeCrane, crane, live, nfz);
     this.#updateLabel(state, crane, camera, live, preview, release);
+    this.#updateTargetArrow(camera, live, guidance);
   }
 
   // ── 하중률 게이지: 반경→정격 곡선 위 현재 작업점 ──
-  #drawGauge(crane, spec) {
+  #drawGauge(crane, spec, live) {
     const ctx = this.gaugeCanvas.getContext('2d');
     const W = this.gaugeCanvas.width;
     const H = this.gaugeCanvas.height;
@@ -138,6 +202,20 @@ export class ScreenWidgets {
     ctx.lineTo(cx, H - 26);
     ctx.stroke();
     ctx.setLineDash([]);
+    // 코어가 산출한 정격 한계 반경 — UI는 x좌표로 투영만 한다.
+    if (live && Number.isFinite(crane.limitRadius)) {
+      const lx = px(Math.min(Math.max(crane.limitRadius, rMin), rMax));
+      ctx.strokeStyle = '#e04a34';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(lx, 12);
+      ctx.lineTo(lx, H - 26);
+      ctx.stroke();
+      ctx.fillStyle = '#ff8a76';
+      ctx.textAlign = 'center';
+      ctx.fillText('한계', lx, H - 29);
+      ctx.textAlign = 'left';
+    }
     // 라벨
     ctx.fillStyle = '#c8d2dc';
     ctx.font = '10px Consolas, monospace';
@@ -294,30 +372,9 @@ export class ScreenWidgets {
     this.windText.textContent = `${wind.speed.toFixed(1)}m/s${wind.maxOperating ? ` / ${wind.maxOperating}` : ''}`;
   }
 
-  // ── 상태 배너: 우선순위 1개만 (홀드 > 리미터 > 리깅 > 풍속) ──
-  #updateBanner(state, activeCrane, crane, live) {
-    let html = null;
-    let cls = '';
-    if (live) {
-      const rigging = state.loads.find(
-        (l) => l.hookedBy === activeCrane && (l.state === 'rigging' || l.state === 'derigging'),
-      );
-      if ((state.safety?.agentHolds ?? []).includes(activeCrane)) {
-        html = '⛔ 지상 인원·장비 접근 — 작업 일시정지';
-        cls = 'danger';
-      } else if (crane.extra?.limiterActive) {
-        html = '⚠ 모멘트 리미터 작동 — 반경을 줄이세요';
-        cls = 'danger';
-      } else if (rigging) {
-        const total = rigging.state === 'rigging' ? rigging.rigTime : rigging.derigTime;
-        const pct = total > 0 ? Math.round((1 - rigging.rigRemain / total) * 100) : 0;
-        html = `🔧 ${rigging.state === 'rigging' ? '줄걸이' : '해체'} 작업 중 ${pct}% <span class="ov-progress"><span style="width:${pct}%"></span></span>`;
-        cls = 'work';
-      } else if (state.wind?.maxOperating && state.wind.speed > state.wind.maxOperating) {
-        html = `⛔ 풍속 초과 (${state.wind.speed.toFixed(1)} > ${state.wind.maxOperating} m/s) — 작업 중지`;
-        cls = 'danger';
-      }
-    }
+  // ── 상태 배너: 우선순위 1개만 (홀드 > 리미터 > NFZ 접근 > 리깅 > 풍속) ──
+  #updateBanner(state, activeCrane, crane, live, nfz) {
+    const { html, cls } = selectBanner(state, activeCrane, crane, live, nfz);
     if (html !== this._lastBanner) {
       this._lastBanner = html;
       this.banner.hidden = !html;
@@ -328,6 +385,20 @@ export class ScreenWidgets {
     } else if (html && html.includes('ov-progress')) {
       this.banner.innerHTML = html; // 진행 바는 매 프레임 갱신
     }
+  }
+
+  #updateTargetArrow(camera, live, guidance) {
+    if (!live || !camera || !guidance?.pos) {
+      this.targetArrow.hidden = true;
+      return;
+    }
+    const edge = projectEdgeArrow(guidance.pos, camera, window.innerWidth, window.innerHeight);
+    this.targetArrow.hidden = !edge;
+    if (!edge) return;
+    this.targetArrow.style.left = `${edge.x}px`;
+    this.targetArrow.style.top = `${edge.y}px`;
+    this.targetArrow.style.transform = `translate(-50%, -50%) rotate(${edge.angle}rad)`;
+    this.targetArrow.className = `ov-target-arrow ${guidance.kind}`;
   }
 
   // ── 후크/부재 거리 라벨 (월드→스크린 투영) ──

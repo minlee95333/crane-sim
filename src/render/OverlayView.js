@@ -129,6 +129,34 @@ export class OverlayView {
       this.root.add(disc);
     }
 
+    // ── NFZ 접근 경고: 코어가 선택한 구역의 사각 테두리 ──
+    this.nfzGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(),
+      new THREE.Vector3(), new THREE.Vector3(),
+    ]);
+    this.nfzOutline = new THREE.Line(
+      this.nfzGeo,
+      new THREE.LineBasicMaterial({ color: COLOR.danger, transparent: true, opacity: 0.95, depthWrite: false }),
+    );
+    this.root.add(this.nfzOutline);
+
+    // ── 캐리 주행 경로: 점선 + 샘플 점(차단=적색) ──
+    const DRIVE_N = 21;
+    this.driveGeo = new THREE.BufferGeometry();
+    this.driveGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(DRIVE_N * 3), 3));
+    this.driveGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(DRIVE_N * 3), 3));
+    this.driveLine = new THREE.Line(
+      this.driveGeo,
+      new THREE.LineDashedMaterial({
+        vertexColors: true, transparent: true, opacity: 0.9, dashSize: 0.7, gapSize: 0.45, depthWrite: false,
+      }),
+    );
+    this.drivePoints = new THREE.Points(
+      this.driveGeo,
+      new THREE.PointsMaterial({ vertexColors: true, size: 0.24, sizeAttenuation: true, depthWrite: false }),
+    );
+    this.root.add(this.driveLine, this.drivePoints);
+
     // ── 흔들림 인디케이터: 하중 하부 수평 화살표 (방향=흔들림 벡터) ──
     this.swayArrow = new THREE.Group();
     const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1, 5), this.mats.near);
@@ -175,6 +203,9 @@ export class OverlayView {
     for (const mark of this.intruderMarks) mark.visible = false;
     this.sweepLine.visible = false;
     for (const disc of this.sweepHazards) disc.visible = false;
+    this.nfzOutline.visible = false;
+    this.driveLine.visible = false;
+    this.drivePoints.visible = false;
     this.swayArrow.visible = false;
     for (const mark of this.missionMarks) mark.visible = false;
   }
@@ -187,9 +218,19 @@ export class OverlayView {
   /**
    * @param {Object} state world.getState()
    * @param {number} activeCrane
-   * @param {Object} opts { live, enabled, preview: attachPreview 결과, release: releasePreview 결과, time }
+   * @param {Object} opts core 질의 결과(preview/release/sweep/nfz/drivePath)와 표시 상태
    */
-  update(state, activeCrane, { live = true, enabled = this.enabled, preview = null, release = null, sweep = null, readiness = null, time = null } = {}) {
+  update(state, activeCrane, {
+    live = true,
+    enabled = this.enabled,
+    preview = null,
+    release = null,
+    sweep = null,
+    readiness = null,
+    nfz = null,
+    drivePath = null,
+    time = null,
+  } = {}) {
     this.enabled = enabled;
     const show = live && enabled;
     this.root.visible = show;
@@ -200,6 +241,36 @@ export class OverlayView {
     if (!crane) return;
     const hook = crane.hookPos;
     const holding = release != null;
+
+    if (nfz?.near) {
+      const [minX, minZ] = nfz.min;
+      const [maxX, maxZ] = nfz.max;
+      const positions = this.nfzGeo.getAttribute('position');
+      [[minX, minZ], [maxX, minZ], [maxX, maxZ], [minX, maxZ], [minX, minZ]]
+        .forEach(([x, z], i) => positions.setXYZ(i, x, 0.12, z));
+      positions.needsUpdate = true;
+      this.nfzGeo.computeBoundingSphere();
+      this.nfzOutline.visible = true;
+    }
+
+    if (drivePath?.samples?.length) {
+      const positions = this.driveGeo.getAttribute('position');
+      const colors = this.driveGeo.getAttribute('color');
+      const n = Math.min(drivePath.samples.length, positions.count);
+      for (let i = 0; i < positions.count; i++) {
+        const s = drivePath.samples[Math.min(i, n - 1)];
+        positions.setXYZ(i, s.x, 0.14, s.z);
+        if (s.blocked) colors.setXYZ(i, 0.88, 0.29, 0.2);
+        else colors.setXYZ(i, 0.24, 0.81, 0.43);
+      }
+      positions.needsUpdate = true;
+      colors.needsUpdate = true;
+      this.driveGeo.setDrawRange(0, n);
+      this.driveGeo.computeBoundingSphere();
+      this.driveLine.computeLineDistances();
+      this.driveLine.visible = true;
+      this.drivePoints.visible = drivePath.samples.some((s) => s.blocked);
+    }
 
     if (!holding) {
       // ── 빈 후크: 조준점 + 낙하선 + 픽업 가이드 ──
