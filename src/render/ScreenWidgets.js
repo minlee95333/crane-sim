@@ -87,6 +87,7 @@ export class ScreenWidgets {
       <div class="ov-banner" hidden></div>
       <div class="ov-label" hidden></div>
       <div class="ov-target-arrow" hidden>➤</div>
+      <div class="ov-onboard" hidden></div>
     `;
     this.gaugeCanvas = container.querySelector('.ov-gauge canvas');
     this.mapCanvas = container.querySelector('.ov-minimap canvas');
@@ -96,6 +97,8 @@ export class ScreenWidgets {
     this.banner = container.querySelector('.ov-banner');
     this.label = container.querySelector('.ov-label');
     this.targetArrow = container.querySelector('.ov-target-arrow');
+    this.onboard = container.querySelector('.ov-onboard');
+    this._onboardUntil = 0;
     this._lastBanner = null;
     this._lastLabel = null;
   }
@@ -120,6 +123,7 @@ export class ScreenWidgets {
     release = null,
     nfz = null,
     guidance = null,
+    planNote = null,
   } = {}) {
     if (!this.ok || !this.enabled) return;
     const crane = state.cranes?.[activeCrane];
@@ -127,9 +131,23 @@ export class ScreenWidgets {
     this.#drawGauge(crane, spec, live);
     this.#drawMinimap(state, activeCrane, camera, scenario);
     this.#updateWind(state);
-    this.#updateBanner(state, activeCrane, crane, live, nfz);
+    this.#updateBanner(state, activeCrane, crane, live, nfz, planNote);
     this.#updateLabel(state, crane, camera, live, preview, release);
     this.#updateTargetArrow(camera, live, guidance);
+    // 온보딩 카드 만료 (wall-clock — 배속 무관한 순수 연출)
+    if (this.onboard && !this.onboard.hidden && Date.now() > this._onboardUntil) {
+      this.onboard.hidden = true;
+    }
+  }
+
+  /** 시나리오 로드 시 목표·조작 요약 카드 — 6초 후 자동 소멸 (Tier3) */
+  showOnboarding(entry) {
+    if (!this.ok || !entry) return;
+    this.onboard.innerHTML =
+      `<strong>${entry.name}</strong><span>${entry.desc ?? ''}</span>` +
+      `<em>화살표 선회·기복 / Q·E 권상 / WASD 주행 / Space 픽업 / H 보조UI</em>`;
+    this.onboard.hidden = false;
+    this._onboardUntil = Date.now() + 6000;
   }
 
   // ── 하중률 게이지: 반경→정격 곡선 위 현재 작업점 ──
@@ -373,8 +391,12 @@ export class ScreenWidgets {
   }
 
   // ── 상태 배너: 우선순위 1개만 (홀드 > 리미터 > NFZ 접근 > 리깅 > 풍속) ──
-  #updateBanner(state, activeCrane, crane, live, nfz) {
-    const { html, cls } = selectBanner(state, activeCrane, crane, live, nfz);
+  #updateBanner(state, activeCrane, crane, live, nfz, planNote = null) {
+    // 계획 재생 중에는 활성 계획 이벤트 주석이 배너를 대신한다 (Tier3)
+    const { html, cls } =
+      !live && planNote
+        ? { html: `▶ ${planNote}`, cls: 'work' }
+        : selectBanner(state, activeCrane, crane, live, nfz);
     if (html !== this._lastBanner) {
       this._lastBanner = html;
       this.banner.hidden = !html;

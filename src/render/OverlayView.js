@@ -177,6 +177,19 @@ export class OverlayView {
       this.root.add(mark);
     }
 
+    // ── 궤적 트레일: 최근 ~24s 후크/부재 경로 (0.2s 시뮬시간 샘플 — 결정론) ──
+    this.TRAIL_MAX = 120;
+    this.trailGeo = new THREE.BufferGeometry();
+    this.trailGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(this.TRAIL_MAX * 3), 3));
+    this.trailGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(this.TRAIL_MAX * 3), 3));
+    this.trailLine = new THREE.Line(
+      this.trailGeo,
+      new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.55, depthWrite: false }),
+    );
+    this.root.add(this.trailLine);
+    this._trail = [];
+    this._trailLastT = null;
+
     // ── 위험 반경 링 + 침입자 마커 (역삼각 콘) ──
     this.dangerRing = ringMesh(0.94, 1.0, this.mats.near, 64); // 단위 반경 — scale로 반경 적용
     this.root.add(this.dangerRing);
@@ -208,6 +221,33 @@ export class OverlayView {
     this.drivePoints.visible = false;
     this.swayArrow.visible = false;
     for (const mark of this.missionMarks) mark.visible = false;
+    this.trailLine.visible = false;
+  }
+
+  /** 궤적 트레일 갱신 — 시뮬 시간 역행(리셋·되감기) 시 버퍼 초기화 */
+  #updateTrail(point, time) {
+    if (time == null || !point) return;
+    if (this._trailLastT != null && time < this._trailLastT) this._trail = [];
+    if (this._trailLastT == null || time - this._trailLastT >= 0.2 || this._trail.length === 0) {
+      this._trail.push([point[0], point[1], point[2]]);
+      if (this._trail.length > this.TRAIL_MAX) this._trail.shift();
+      this._trailLastT = time;
+    }
+    if (this._trail.length < 2) return;
+    const positions = this.trailGeo.getAttribute('position');
+    const colors = this.trailGeo.getAttribute('color');
+    const n = this._trail.length;
+    for (let i = 0; i < n; i++) {
+      const p = this._trail[i];
+      positions.setXYZ(i, p[0], p[1], p[2]);
+      const f = 0.15 + 0.85 * (i / (n - 1)); // 오래된 점일수록 어둡게 (페이드)
+      colors.setXYZ(i, 0.88 * f, 0.75 * f, 0.35 * f);
+    }
+    positions.needsUpdate = true;
+    colors.needsUpdate = true;
+    this.trailGeo.setDrawRange(0, n);
+    this.trailGeo.computeBoundingSphere();
+    this.trailLine.visible = true;
   }
 
   #setReticleMat(mat) {
@@ -417,6 +457,9 @@ export class OverlayView {
         }
       }
     }
+
+    // 궤적 트레일: 매달림 시 부재, 아니면 후크 경로 (Tier3)
+    this.#updateTrail(holding ? release.held.pos : hook, time);
   }
 
   #setLead(from, to, color) {

@@ -292,3 +292,35 @@ button, select { font: inherit; }
 /* hidden 속성이 author display 규칙에 지지 않도록 + 대시보드는 오버레이 위 */
 #overlay [hidden] { display: none !important; }
 #dashboard { z-index: 10; }
+
+/* Tier3: 온보딩 카드 · 간트 커서 */
+.ov-onboard {
+  position: absolute;
+  top: 18%;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-width: 460px;
+  padding: 14px 20px;
+  text-align: center;
+  background: rgba(13, 18, 24, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  backdrop-filter: blur(10px);
+}
+.ov-onboard strong { font-size: 16px; color: #eef4fa; }
+.ov-onboard span { font-size: 12.5px; color: #aeb9c6; line-height: 1.5; }
+.ov-onboard em { font-size: 11px; font-style: normal; color: #7f9276; }
+
+.gantt { position: relative; }
+.gantt-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #3ecf6e;
+  opacity: 0.85;
+  pointer-events: none;
+}

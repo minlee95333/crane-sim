@@ -302,6 +302,15 @@ export class Dashboard {
       ? `■ 3D 재생 정지 · ${(time / 60).toFixed(1)}/${(makespan / 60).toFixed(1)}분`
       : `▶ 3D 계획 재생 · ${(time / 60).toFixed(1)}/${(makespan / 60).toFixed(1)}분`;
     this.root.querySelector('[data-plan-seek]').value = String(Math.round(time));
+    // 간트 시간 커서 — 3D 재생과 동기 (Tier3)
+    const gantt = this.root.querySelector('[data-gantt]');
+    let cursor = gantt.querySelector('.gantt-cursor');
+    if (!cursor) {
+      cursor = document.createElement('div');
+      cursor.className = 'gantt-cursor';
+      gantt.appendChild(cursor);
+    }
+    cursor.style.left = `${(time / Math.max(1, makespan)) * 100}%`;
   }
 
   setScenario(index) {

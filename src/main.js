@@ -183,6 +183,7 @@ function loadScenario(idx) {
   dashboard.setScenario(scenarioIdx);
   dashboard.setCranes(entry.scenario.cranes, activeCrane);
   dashboard.setPlanResult(null);
+  widgets.showOnboarding(entry); // 시나리오 목표·조작 요약 카드 (6초)
 }
 
 loadScenario(scenarioIdx);
@@ -350,6 +351,15 @@ function loop(now) {
     drivePath: driveP,
     time: state.time,
   });
+  // 계획 재생 주석: 현재 시각에 활성인 계획 이벤트 요약 (Tier3)
+  const planNote =
+    planPlayer && macroPlan
+      ? macroPlan.events
+          .filter((e) => e.start <= planPlayer.time && planPlayer.time < e.start + e.duration)
+          .slice(0, 3)
+          .map((e) => `${e.craneId} ${e.type}${e.loadId ? '·' + e.loadId : ''}`)
+          .join('  |  ')
+      : null;
   widgets.update(state, activeCrane, sceneManager.camera, {
     spec: sim.scenario.cranes[activeCrane],
     scenario: sim.scenario,
@@ -358,6 +368,7 @@ function loop(now) {
     release: releaseP,
     nfz: nfzP,
     guidance: guidanceP,
+    planNote,
   });
 
   sceneManager.render();

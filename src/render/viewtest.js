@@ -252,6 +252,22 @@ console.log('--- 보조 오버레이 (씬 앵커) ---');
       ov.missionMarks[1].material === ov.mats.idle && ov.missionMarks[1].scale.x < 1,
   );
 
+  // 궤적 트레일: 시뮬시간 샘플 누적 → 표시, 시간 역행 시 리셋
+  {
+    const heldRel = { held: { id: 'g', pos: [15, 5, 10], size: [3, 0.6, 3], target: null, targetElev: 0 },
+      support: 0, bottomGap: 4.4, canRelease: false, onTarget: false, err: null, tol: 1.5, maxGap: 0.5 };
+    const cs = { hookPos: [15, 8, 10], basePos: [0, 0, 0], radius: 18, slewAngle: 0.6 };
+    const before = ov._trail.length; // 앞선 테스트 블록들이 쌓은 샘플
+    for (let k = 0; k < 5; k++) {
+      heldRel.held.pos = [15 + k, 5, 10];
+      ov.update({ cranes: [cs], agents: [], safety: {} }, 0, { live: true, release: heldRel, time: 10 + k * 0.25 });
+    }
+    check('트레일이 샘플 5점 누적 후 표시', ov.trailLine.visible && ov._trail.length === before + 5 &&
+      ov.trailGeo.drawRange.count === ov._trail.length);
+    ov.update({ cranes: [cs], agents: [], safety: {} }, 0, { live: true, release: heldRel, time: 0.1 });
+    check('시간 역행(리셋) 시 트레일 버퍼 초기화', ov._trail.length <= 1);
+  }
+
   // live=false → 전체 숨김
   ov.update(baseState, 0, { live: false, preview: null, release: null });
   check('계획 재생·리플레이 중 오버레이 숨김', ov.root.visible === false);
