@@ -111,6 +111,44 @@ export class OverlayView {
     );
     this.root.add(this.gapLine);
 
+    // ── 선회 스윕 예고: 정점색 원호 (안전 회록 / 위험 적) ──
+    const SWEEP_N = 73; // 72 샘플 + 폐합점
+    this.sweepGeo = new THREE.BufferGeometry();
+    this.sweepGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(SWEEP_N * 3), 3));
+    this.sweepGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(SWEEP_N * 3), 3));
+    this.sweepLine = new THREE.Line(
+      this.sweepGeo,
+      new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.85, depthWrite: false }),
+    );
+    this.root.add(this.sweepLine);
+    this.sweepHazards = []; // 위험 샘플 강조 디스크 풀
+    for (let i = 0; i < 24; i++) {
+      const disc = new THREE.Mesh(new THREE.CircleGeometry(0.55, 12), this.mats.danger);
+      disc.rotation.x = -Math.PI / 2;
+      this.sweepHazards.push(disc);
+      this.root.add(disc);
+    }
+
+    // ── 흔들림 인디케이터: 하중 하부 수평 화살표 (방향=흔들림 벡터) ──
+    this.swayArrow = new THREE.Group();
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1, 5), this.mats.near);
+    shaft.rotation.z = -Math.PI / 2; // +x 방향
+    shaft.position.x = 0.5;
+    this.swayArrow.add(shaft);
+    const head = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.4, 6), this.mats.near);
+    head.rotation.z = -Math.PI / 2;
+    head.position.x = 1.15;
+    this.swayArrow.add(head);
+    this.root.add(this.swayArrow);
+
+    // ── 미션 마커: ready=녹 다이아 바운스 / 잠김=회백 정지 (풀 12) ──
+    this.missionMarks = [];
+    for (let i = 0; i < 12; i++) {
+      const mark = new THREE.Mesh(new THREE.OctahedronGeometry(0.4), this.mats.ok);
+      this.missionMarks.push(mark);
+      this.root.add(mark);
+    }
+
     // ── 위험 반경 링 + 침입자 마커 (역삼각 콘) ──
     this.dangerRing = ringMesh(0.94, 1.0, this.mats.near, 64); // 단위 반경 — scale로 반경 적용
     this.root.add(this.dangerRing);
@@ -135,6 +173,10 @@ export class OverlayView {
     this.gapLine.visible = false;
     this.dangerRing.visible = false;
     for (const mark of this.intruderMarks) mark.visible = false;
+    this.sweepLine.visible = false;
+    for (const disc of this.sweepHazards) disc.visible = false;
+    this.swayArrow.visible = false;
+    for (const mark of this.missionMarks) mark.visible = false;
   }
 
   #setReticleMat(mat) {
@@ -147,7 +189,7 @@ export class OverlayView {
    * @param {number} activeCrane
    * @param {Object} opts { live, enabled, preview: attachPreview 결과, release: releasePreview 결과, time }
    */
-  update(state, activeCrane, { live = true, enabled = this.enabled, preview = null, release = null, time = null } = {}) {
+  update(state, activeCrane, { live = true, enabled = this.enabled, preview = null, release = null, sweep = null, readiness = null, time = null } = {}) {
     this.enabled = enabled;
     const show = live && enabled;
     this.root.visible = show;
@@ -200,6 +242,18 @@ export class OverlayView {
         // 리드라인: 후크 → 후보 상면
         this.#setLead([hook[0], hook[1], hook[2]], [l.pos[0], topY, l.pos[2]], guideMat.color);
       }
+      // 미션 마커: 지금 들 수 있는 부재(녹 바운스) vs 선행 잠김(회백)
+      if (readiness) {
+        readiness.slice(0, this.missionMarks.length).forEach((r, i) => {
+          const mark = this.missionMarks[i];
+          mark.visible = true;
+          mark.material = r.ready ? this.mats.ok : this.mats.idle;
+          const bob = r.ready && time != null ? 0.25 * Math.sin(time * 3 + i) : 0;
+          mark.position.set(r.pos[0], r.pos[1] + r.size[1] / 2 + 1.7 + bob, r.pos[2]);
+          mark.rotation.y = time != null ? time * (r.ready ? 1.2 : 0) : 0;
+          mark.scale.setScalar(r.ready ? 1 : 0.65);
+        });
+      }
     } else {
       // ── 매달림: 안착 가이드 + 리드라인 + 위험 반경 ──
       const held = release.held;
@@ -227,6 +281,47 @@ export class OverlayView {
       this.gapLine.material = release.canRelease ? this.mats.ok : this.mats.near;
       this.gapLine.scale.y = gap;
       this.gapLine.position.set(held.pos[0], release.support + gap / 2, held.pos[2]);
+
+      // 선회 스윕 예고: 위험 구간이 있을 때만 표시 (전부 안전하면 시각 소음 방지)
+      if (sweep && sweep.samples.some((s) => s.hit)) {
+        const positions = this.sweepGeo.getAttribute('position');
+        const colors = this.sweepGeo.getAttribute('color');
+        const n = sweep.samples.length;
+        let hazardIdx = 0;
+        for (let i = 0; i <= n; i++) {
+          const s = sweep.samples[i % n];
+          positions.setXYZ(i, s.x, 0.09, s.z);
+          if (s.hit) colors.setXYZ(i, 0.88, 0.29, 0.2);
+          else colors.setXYZ(i, 0.55, 0.62, 0.58);
+          if (s.hit && i < n && hazardIdx < this.sweepHazards.length) {
+            const disc = this.sweepHazards[hazardIdx++];
+            disc.visible = true;
+            disc.position.set(s.x, 0.1, s.z);
+          }
+        }
+        positions.needsUpdate = true;
+        colors.needsUpdate = true;
+        this.sweepGeo.computeBoundingSphere();
+        this.sweepLine.visible = true;
+      }
+
+      // 흔들림 인디케이터: 매달림점(반경 방향 점) 대비 후크의 수평 편차 벡터
+      // (합성 상태 가드: basePos·radius 없는 계획 재생 상태에선 생략)
+      if (crane.basePos && crane.radius != null && crane.slewAngle != null) {
+        const radial = [
+          crane.basePos[0] + crane.radius * Math.cos(crane.slewAngle),
+          crane.basePos[2] + crane.radius * Math.sin(crane.slewAngle),
+        ];
+        const dx = hook[0] - radial[0];
+        const dz = hook[2] - radial[1];
+        const mag = Math.hypot(dx, dz);
+        if (mag > 0.05) {
+          this.swayArrow.visible = true;
+          this.swayArrow.position.set(held.pos[0], held.pos[1] - held.size[1] / 2 - 0.3, held.pos[2]);
+          this.swayArrow.rotation.y = -Math.atan2(dz, dx);
+          this.swayArrow.scale.setScalar(Math.min(1 + mag * 2.5, 4));
+        }
+      }
 
       // 위험 반경 (에이전트 있는 시나리오만)
       if ((state.agents ?? []).length > 0) {

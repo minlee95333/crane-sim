@@ -338,6 +338,8 @@ function loop(now) {
     enabled: assistOn,
     preview: attachP,
     release: releaseP,
+    sweep: liveNow && releaseP && assistOn ? sim.world.sweepPreview(activeCrane) : null,
+    readiness: liveNow && !releaseP && assistOn ? sim.world.liftReadiness() : null,
     time: state.time,
   });
   widgets.update(state, activeCrane, sceneManager.camera, {

@@ -489,13 +489,17 @@ export class World {
     return best;
   }
 
+  /** 미충족 선행 부재 목록 (최종 안착 단계에만 적용) — 판정·미션 가이드 공용 */
+  #unmetOf(load) {
+    if (!load.finalLeg) return [];
+    return load.dependsOn.filter((id) => this.loads.find((l) => l.id === id)?.state !== 'placed');
+  }
+
   /** 픽업 차단 사유 — 적격 후보에 대한 규칙 검사 (#attach와 공유) */
   #attachBlock(load) {
     // 시공순서: 최종 안착(건립) 단계에만 적용 — 하역·야적 이동은 선행 무관
-    if (load.finalLeg) {
-      const unmet = load.dependsOn.filter(
-        (id) => this.loads.find((l) => l.id === id)?.state !== 'placed',
-      );
+    {
+      const unmet = this.#unmetOf(load);
       if (unmet.length > 0) return { reason: 'precedence', unmet };
     }
     // 바람: 작업한계풍속 초과 시 신규 인양 금지
@@ -542,6 +546,77 @@ export class World {
       block,
       ok: target === eligible && !block,
     };
+  }
+
+  /**
+   * 선회 스윕 예고 (순수 질의): 현 반경·높이로 매달린 부재가 전체 선회 시 지날 호를
+   * 샘플링해 충돌·금지구역 여부를 반환. 조작 전 예측용 — 판정 규칙은 #checkSafety와 동일.
+   * @returns {{ radius, height, samples: [{angle,x,z,hit}] }|null} 매달림 없으면 null
+   */
+  sweepPreview(craneId, stepDeg = 5) {
+    const crane = this.cranes[craneId];
+    const held = this.loads.find((l) => l.state === 'hooked' && l.hookedBy === craneId);
+    if (!crane || !held) return null;
+    const [bx, , bz] = crane.basePos;
+    const r = crane.getRadius();
+    const size = yawExtents(held);
+    const y = held.pos[1];
+    const PEN = 0.1;
+    const placed = this.loads.filter((p) => p.state === 'placed');
+    const n = Math.max(8, Math.round(360 / stepDeg));
+    const samples = [];
+    for (let i = 0; i < n; i++) {
+      const angle = (i / n) * Math.PI * 2;
+      const pos = [bx + r * Math.cos(angle), y, bz + r * Math.sin(angle)];
+      let hit = null;
+      for (const ob of this.obstacles) {
+        if (aabbOverlap(pos, size, ob)) {
+          hit = 'obstacle';
+          break;
+        }
+      }
+      if (!hit) {
+        for (const p of placed) {
+          const shrunk = [p.size[0] - PEN * 2, p.size[1] - PEN * 2, p.size[2] - PEN * 2];
+          if (aabbOverlap(pos, size, { pos: [p.pos[0], p.bottomY + PEN, p.pos[2]], size: shrunk })) {
+            hit = 'placed';
+            break;
+          }
+        }
+      }
+      if (!hit) {
+        for (const tr of this.trucks) {
+          const ob = tr.obstacle();
+          if (ob && aabbOverlap(pos, size, ob)) {
+            hit = 'truck';
+            break;
+          }
+        }
+      }
+      if (!hit) {
+        for (const zn of this.noFlyZones) {
+          if (pos[0] >= zn.min[0] && pos[0] <= zn.max[0] && pos[2] >= zn.min[1] && pos[2] <= zn.max[1]) {
+            hit = 'nfz';
+            break;
+          }
+        }
+      }
+      samples.push({ angle, x: pos[0], z: pos[2], hit });
+    }
+    return { radius: r, height: y, samples };
+  }
+
+  /**
+   * 미션 가이드 (순수 질의): 목표가 있는 지상 부재의 픽업 준비 상태 — 선행 충족 여부.
+   * ready=true인 부재가 "지금 들 수 있는" 후보다 (#attachBlock과 같은 unmet 규칙).
+   */
+  liftReadiness() {
+    return this.loads
+      .filter((l) => l.state === 'ground' && l.target)
+      .map((l) => {
+        const unmet = this.#unmetOf(l);
+        return { id: l.id, pos: [...l.pos], size: [...l.size], ready: unmet.length === 0, unmet };
+      });
   }
 
   #attach(craneId, crane) {

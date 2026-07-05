@@ -92,6 +92,19 @@ export class ScreenWidgets {
     ctx.strokeStyle = '#7fa8cc';
     ctx.lineWidth = 1.6;
     ctx.stroke();
+    // 픽앤캐리 감격 곡선 (주행 인양 중 유효 정격 — 코어 getCapacity와 동일 계수)
+    if (crane.extra?.carryDerated) {
+      const factor = crane.extra.pickCarryFactor ?? 0.66;
+      ctx.beginPath();
+      rows.forEach(([r, c], i) => (i === 0 ? ctx.moveTo(px(r), py(c * factor)) : ctx.lineTo(px(r), py(c * factor))));
+      ctx.strokeStyle = '#e0a53a';
+      ctx.setLineDash([5, 3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#ffcf7a';
+      ctx.font = '10px Consolas, monospace';
+      ctx.fillText(`캐리 감격 ×${factor}`, W - 92, 10);
+    }
     // 현재 하중 수평선
     const ratio = Number.isFinite(crane.loadRatio) ? crane.loadRatio : 1.2;
     const danger = crane.loadMass > 0 && ratio >= 1;

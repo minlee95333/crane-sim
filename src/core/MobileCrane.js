@@ -158,7 +158,17 @@ export class MobileCrane extends Crane {
   }
 
   getCapacity() {
-    return this.capacityAtRadius(this.getRadius());
+    const cap = this.capacityAtRadius(this.getRadius());
+    // 픽앤캐리 감격 (T2-⑧ 런타임 정합): 하중을 매단 채 주행 중이면 정격이 준다.
+    // 계획 실행은 drive 명령을 쓰지 않아(#drive 주석) 계획·오라클 결과는 불변이고,
+    // 계획된 캐리는 checkCarryFeasible이 이미 감격 이내만 허용하므로 리미터 미발동.
+    if (this.#carrying()) return cap * (this.spec.rating?.pickCarryFactor ?? 0.66);
+    return cap;
+  }
+
+  /** 주행 인양(픽앤캐리) 중인가 — 하중 매달림 + 유의미한 주행 속도 */
+  #carrying() {
+    return this.loadMass > 0 && Math.abs(this.driveVel) > 0.05;
   }
 
   capacityAtRadius(r) {
@@ -194,6 +204,8 @@ export class MobileCrane extends Crane {
       swayMag: this.sway ? this.sway.magnitude : 0,
       driveYaw: this.driveYaw,
       driveVel: this.driveVel,
+      carryDerated: this.#carrying(), // 감격 정격 적용 중 (게이지·HUD 표시용)
+      pickCarryFactor: this.spec.rating?.pickCarryFactor ?? 0.66,
     };
   }
 }

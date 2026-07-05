@@ -195,6 +195,42 @@ console.log('--- 보조 오버레이 (씬 앵커) ---');
       ov.intruderMarks[0].visible && Math.abs(ov.dangerRing.scale.x - 6) < 0.5,
   );
 
+  // 스윕 예고: 위험 샘플 정점이 적색, 위험 디스크 배치
+  const sweepSamples = Array.from({ length: 72 }, (_, i) => {
+    const angle = (i / 72) * Math.PI * 2;
+    return { angle, x: 21 * Math.cos(angle), z: 21 * Math.sin(angle), hit: i === 6 ? 'obstacle' : null };
+  });
+  const heldCrane = { hookPos: [21.2, 8, 0], basePos: [0, 0, 0], radius: 21.2, slewAngle: 0 };
+  ov.update({ cranes: [heldCrane], agents: [], safety: {} }, 0, {
+    live: true,
+    release: { held, support: 0, bottomGap: 3, canRelease: false, onTarget: false, err: 9, tol: 1.5, maxGap: 0.5 },
+    sweep: { radius: 21, height: 5, samples: sweepSamples },
+    time: 1,
+  });
+  const sweepColor = ov.sweepGeo.getAttribute('color');
+  check(
+    '스윕 호 표시 + 위험 정점 적색·디스크 강조',
+    ov.sweepLine.visible && sweepColor.getX(6) > 0.8 && sweepColor.getX(20) < 0.6 &&
+      ov.sweepHazards[0].visible,
+  );
+
+  // 미션 마커: ready=녹 / 잠김=회백
+  ov.update({ cranes: [heldCrane], agents: [], safety: {} }, 0, {
+    live: true,
+    preview: null,
+    release: null,
+    readiness: [
+      { id: 'a', pos: [5, 1, 0], size: [2, 2, 2], ready: true, unmet: [] },
+      { id: 'b', pos: [9, 1, 0], size: [2, 2, 2], ready: false, unmet: ['a'] },
+    ],
+    time: 1,
+  });
+  check(
+    '미션 마커: 준비=녹 다이아·잠김=회백 축소',
+    ov.missionMarks[0].visible && ov.missionMarks[0].material === ov.mats.ok &&
+      ov.missionMarks[1].material === ov.mats.idle && ov.missionMarks[1].scale.x < 1,
+  );
+
   // live=false → 전체 숨김
   ov.update(baseState, 0, { live: false, preview: null, release: null });
   check('계획 재생·리플레이 중 오버레이 숨김', ov.root.visible === false);

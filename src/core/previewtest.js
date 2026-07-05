@@ -127,4 +127,58 @@ console.log('--- 예측=실제 일치 (안착) ---');
   check('후보권 밖(부재 없음)이면 attachPreview=null', makeWorld({}).attachPreview(0) === null);
 }
 
+// ── 7. 스윕 예고: 아크 위 장애물·NFZ 샘플만 hit ────────────────────────
+console.log('--- 스윕 예고 (sweepPreview) ---');
+{
+  const world = makeWorld({ loads: [{ ...GIRDER, target: [0, 21.2] }] });
+  world.addObstacle({ id: 'rack', pos: [21.2 * Math.cos(0.6), 0, 21.2 * Math.sin(0.6)], size: [4, 10, 4] });
+  world.addNoFlyZone({ id: 'nfz', min: [-25, -8], max: [-15, 8] }); // 180° 부근 아크 통과
+  check('빈 후크면 sweepPreview=null', world.sweepPreview(0) === null);
+  world.cranes[0].setHookHeight(world.loads[0].topY + 1);
+  world.toggleAttach(0);
+  const sweep = world.sweepPreview(0);
+  const hitTypes = new Set(sweep.samples.filter((s) => s.hit).map((s) => s.hit));
+  const obstacleAngles = sweep.samples.filter((s) => s.hit === 'obstacle').map((s) => s.angle);
+  check(
+    '장애물이 아크 0.6rad 부근 샘플에서만 검출',
+    hitTypes.has('obstacle') && obstacleAngles.every((a) => Math.abs(a - 0.6) < 0.35),
+  );
+  check('금지구역 180° 부근 검출', hitTypes.has('nfz'));
+  check(
+    '무해 구간은 hit 없음 (90° 부근)',
+    sweep.samples.filter((s) => Math.abs(s.angle - Math.PI / 2) < 0.2).every((s) => !s.hit),
+  );
+}
+
+// ── 8. 미션 가이드: 선행 충족 여부 ─────────────────────────────────────
+console.log('--- 미션 가이드 (liftReadiness) ---');
+{
+  const world = makeWorld({
+    loads: [
+      { id: 'col', name: '기둥', size: [1, 6, 1], mass: 7, pos: [21.2, 0, 0], target: [10, 10] },
+      { id: 'beam', name: '보', size: [6, 0.5, 0.5], mass: 4, pos: [18, 0, 5], target: [10, 10], dependsOn: ['col'] },
+    ],
+  });
+  const before = Object.fromEntries(world.liftReadiness().map((r) => [r.id, r]));
+  check('선행 없는 기둥 ready·보는 잠김(unmet=[col])', before.col.ready && !before.beam.ready && before.beam.unmet[0] === 'col');
+  // 기둥 안착 후 보 해금
+  world.cranes[0].setHookHeight(world.loads[0].topY + 1);
+  world.toggleAttach(0);
+  for (let i = 0; i < 60 * 60; i++) {
+    world.step(DT, [{ slew: 1 }]);
+    const p = world.releasePreview(0);
+    if (p?.onTarget && p.canRelease) break;
+  }
+  world.toggleAttach(0);
+  if (world.loads[0].state === 'placed') {
+    const after = Object.fromEntries(world.liftReadiness().map((r) => [r.id, r]));
+    check('선행 안착 후 보 해금', after.beam.ready === true);
+  } else {
+    // 궤적상 목표 도달 실패 시 직접 배치로 해금 검증 (결정론 유지)
+    world.loads[0].state = 'placed';
+    const after = Object.fromEntries(world.liftReadiness().map((r) => [r.id, r]));
+    check('선행 안착 후 보 해금', after.beam.ready === true);
+  }
+}
+
 console.log('\nALL PASS');
