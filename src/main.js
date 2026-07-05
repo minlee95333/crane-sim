@@ -36,6 +36,7 @@ const overlayView = new OverlayView();
 sceneManager.scene.add(overlayView.root);
 const widgets = new ScreenWidgets(document.getElementById('overlay'));
 let assistOn = true;
+let hudOn = true; // 좌상단 정보창 (I 토글)
 // 브라우저 자동재생 정책: 첫 제스처에서 오디오 컨텍스트 생성
 for (const evt of ['pointerdown', 'keydown']) {
   window.addEventListener(evt, () => sound.unlock(), { once: true });
@@ -116,6 +117,11 @@ const dashboard = new Dashboard(dashboardRoot, SCENARIOS, {
     dashboard.setCameraMode(cameraRig.label);
   },
   mute: () => dashboard.setMuted(sound.toggleMute()),
+  hud: () => {
+    hudOn = !hudOn;
+    hud.style.display = hudOn ? '' : 'none';
+    dashboard.setHud(hudOn);
+  },
   assist: () => {
     assistOn = !assistOn;
     widgets.setEnabled(assistOn);
@@ -209,6 +215,11 @@ window.addEventListener('keydown', (e) => {
     assistOn = !assistOn;
     widgets.setEnabled(assistOn);
     dashboard.setAssist(assistOn);
+  }
+  if (e.code === 'KeyI') {
+    hudOn = !hudOn;
+    hud.style.display = hudOn ? '' : 'none';
+    dashboard.setHud(hudOn);
   }
 
   if (e.code === 'Tab') {
@@ -385,6 +396,7 @@ function loop(now) {
 }
 
 function drawHUD(state, command) {
+  if (!hudOn) return; // 정보창 숨김 (I)
   const entry = SCENARIOS[scenarioIdx];
   const c = state.cranes[activeCrane];
   const ratioPct = c.loadMass > 0 ? (c.loadRatio * 100).toFixed(0) : '-';
@@ -475,7 +487,7 @@ function drawHUD(state, command) {
     `${recLine}`,
     ``,
     `[주행] W/S 전·후진  A/D 좌·우회전    [팔] ←/→ 선회  ↑/↓ 기복  Q/E 권상·권하  Space 픽업`,
-    `N 다음 시나리오  O 리셋  Tab 크레인 전환  1~4 배속  C 카메라  M 소리  H 보조UI  G 그리드  R 기록  P 리플레이`,
+    `N 다음 시나리오  O 리셋  Tab 크레인 전환  1~4 배속  C 카메라  M 소리  H 보조UI  I 정보창  G 그리드  R 기록  P 리플레이`,
     `마우스: 회전 | 휠: 줌 | 우클릭: 이동`,
   ].join('\n');
 }

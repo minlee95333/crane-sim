@@ -107,6 +107,7 @@ export class Dashboard {
         </div>
         <div class="dash-row" style="margin-top:8px">
           <button class="dash-btn" data-action="assist">🎯 보조 UI 켬 (H)</button>
+          <button class="dash-btn" data-action="hud">📋 정보창 켬 (I)</button>
         </div>
       </section>
 
@@ -337,6 +338,12 @@ export class Dashboard {
     this.root.querySelector('[data-action="mute"]').textContent = muted
       ? '🔇 소리 꺼짐 (M)'
       : '🔊 소리 켬 (M)';
+  }
+
+  setHud(on) {
+    this.root.querySelector('[data-action="hud"]').textContent = on
+      ? '📋 정보창 켬 (I)'
+      : '📋 정보창 꺼짐 (I)';
   }
 
   setAssist(on) {
