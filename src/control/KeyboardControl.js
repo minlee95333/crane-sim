@@ -6,6 +6,7 @@
 //   [선회]  ← / →   상부체 선회 (반시계/시계)
 //   [기복]  ↑ / ↓   붐 올림(반경↓) / 내림(반경↑)
 //   [권상]  Q / E   후크 올림 / 내림
+//   [태그]  Z / X   부재 요 반시계 / 시계
 //   [픽업]  Space   줄걸이/해제
 
 export class KeyboardControl {
@@ -41,6 +42,7 @@ export class KeyboardControl {
       // 차체 주행: WASD (W 전진 / S 후진, A 좌회전 / D 우회전)
       drive: (k.has('KeyW') ? 1 : 0) + (k.has('KeyS') ? -1 : 0),
       steer: (k.has('KeyD') ? 1 : 0) + (k.has('KeyA') ? -1 : 0),
+      tag: (k.has('KeyX') ? 1 : 0) + (k.has('KeyZ') ? -1 : 0),
     };
   }
 }

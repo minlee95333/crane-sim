@@ -17,6 +17,7 @@
 import { FIXED_DT } from '../sim/Simulation.js';
 import { HOOK_GAP } from '../core/World.js';
 import { checkStability, checkTravelStability, pickCarryCapacity } from '../core/Stability.js';
+import { shiftAt, weatherAt } from '../core/SiteRules.js';
 
 const DEFAULTS = {
   maxSteps: 40000, // 안전 타임아웃 (약 666s 시뮬시간)
@@ -55,6 +56,9 @@ export function liftBlockedReason(sim, load) {
   }
   if (sim.world.windDef && sim.world.windSpeed > sim.world.windLimitFor(load))
     return `풍속 초과: ${sim.world.windSpeed.toFixed(1)} > 한계 ${sim.world.windLimitFor(load)} m/s`;
+  const weather = weatherAt(sim.scenario?.weather, sim.world.time);
+  if (weather.blocked) return `기상 작업중지: ${weather.reasons.join(', ')}`;
+  if (!shiftAt(sim.scenario?.shifts, sim.world.time).available) return '작업 교대시간 외';
   return null;
 }
 

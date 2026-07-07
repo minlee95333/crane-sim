@@ -5,6 +5,9 @@ import { Load } from './Load.js';
 import { Sway } from './Sway.js';
 import { craneGeometry, checkPair } from './Interference.js';
 import { checkStability } from './Stability.js';
+import { evaluateSling } from './Rigging.js';
+import { calculateScore } from './Score.js';
+import { heightLimitAt, powerLineClearance, segmentPowerLineClearance, shiftAt, weatherAt } from './SiteRules.js';
 
 // 픽업 판정 여유 (m) — export: 보조 UI가 허용 범위를 그릴 때 동일 값 사용 (P7.11)
 export const ATTACH_MAX_HORIZ = 2.0; // 후크~부재 상면 중심 수평거리
@@ -12,6 +15,8 @@ export const ATTACH_MAX_VERT = 4.0; // 후크~부재 상면 수직거리 (슬링
 export const RELEASE_MAX_GAP = 0.5; // 내려놓기 허용: 부재 바닥~지면 간격
 export const HOOK_GAP = 1.2; // 후크 블록 길이 (후크점~부재 상면)
 export const PLACE_TOL = 1.5; // 목표 안착 허용 오차 (수평, m)
+export const TANDEM_WARN_DEVIATION = 0.8;
+export const TANDEM_HOLD_DEVIATION = 1.6;
 const PREVIEW_NEAR_HORIZ = 12; // 조준 보조가 '근접 후보'를 보여주는 탐색 반경 (판정 아님)
 
 // 바람 외력 (T2-⑦, sway 켠 크레인만): F[N] ≈ WIND_ACCEL_COEF · v² · A  (≈ ½·ρ·Cd)
@@ -21,6 +26,7 @@ export const HOOK_WIND_AREA = 0.4; // 빈 후크블록 수풍면적 (m²)
 // 부재 요(yaw) 추종 (physics.loadYaw): 비틀림 스프링-감쇠로 선회각을 지연 추종
 const YAW_SPRING = 0.15; // (1/s²)
 const YAW_DAMP = 0.4; // (1/s)
+const TAG_YAW_ACCEL = 0.32; // 태그라인 최대 요 가속 (rad/s²)
 const LOAD_SWAY_DAMPING = 0.35; // 이중진자 2단(슬링) 감쇠 — 로프보다 짧아 빨리 잦아듦
 
 export class World {
@@ -42,6 +48,8 @@ export class World {
     this.agentHoldCount = 0; // 홀드 진입 누적 (에지)
     this.agentHoldTime = 0; // 홀드 누적 시간 (s) — makespan 영향의 직접 측정치
     this._prevHolds = new Set();
+    this.tandemHolds = new Set();
+    this.tandemHoldTime = 0;
     this.time = 0; // 시뮬레이션 경과 시간 (s)
     /** 직전 스텝의 이벤트 메시지 (HUD·로그용) */
     this.lastEvent = null;
@@ -66,6 +74,13 @@ export class World {
 
     // 현장 경계 (Simulation이 scenario.site로 설정 — 주행 이탈 방지). null이면 무제한.
     this.siteBounds = null;
+    this.powerLines = [];
+    this.heightLimits = [];
+    this.weatherDef = null;
+    this.shifts = [];
+    this.siteRuleViolations = [];
+    this.siteRuleViolationCount = 0;
+    this._prevSiteRuleViolation = false;
   }
 
   /**
@@ -136,7 +151,9 @@ export class World {
   }
 
   addLoad(def) {
-    this.loads.push(new Load(def));
+    const load = new Load(def);
+    load.sling = evaluateSling(load);
+    this.loads.push(load);
   }
 
   addObstacle(def) {
@@ -220,8 +237,16 @@ export class World {
   /** 해당 크레인이 리깅/해체 작업에 묶여 있는가 (작업 중 크레인 조작 동결) */
   #riggingBusy(craneId) {
     return this.loads.some(
-      (l) => l.hookedBy === craneId && (l.state === 'rigging' || l.state === 'derigging'),
+      (l) => (l.hookedBy === craneId || l.tandemCraneIds?.includes(craneId)) &&
+        (l.state === 'rigging' || l.state === 'derigging'),
     );
+  }
+
+  setOperationalRules(scenario = {}) {
+    this.powerLines = structuredClone(scenario.powerLines ?? []);
+    this.heightLimits = structuredClone(scenario.heightLimits ?? []);
+    this.weatherDef = structuredClone(scenario.weather ?? null);
+    this.shifts = structuredClone(scenario.shifts ?? []);
   }
 
   /**
@@ -259,12 +284,19 @@ export class World {
     for (const agent of this.agents) agent.step(dt, this);
     this.#computeAgentHolds(dt);
 
+    this.tandemHolds.clear();
+    for (const load of this.loads.filter((l) => l.state === 'hooked' && l.tandemCraneIds)) {
+      const sync = this.tandemSyncPreview(load.id);
+      if (sync?.hold) for (const id of load.tandemCraneIds) this.tandemHolds.add(id);
+    }
+    this.tandemHoldTime += dt * this.tandemHolds.size;
+
     // 리깅 작업 중·지상 접근 홀드 크레인은 조작 동결 (실제: 신호수 정지 신호)
     // 주행(drive/steer)으로 base가 움직이면 충돌·경계 침범 시 되돌린다.
     this.cranes.forEach((crane, i) => {
       const px = crane.basePos[0];
       const pz = crane.basePos[2];
-      const frozen = this.#riggingBusy(i) || this.agentHolds.has(i);
+      const frozen = this.#riggingBusy(i) || this.agentHolds.has(i) || this.tandemHolds.has(i);
       crane.step(dt, frozen ? {} : (commands[i] ?? {}));
       if ((crane.basePos[0] !== px || crane.basePos[2] !== pz) && this.#baseBlocked(i)) {
         crane.basePos[0] = px;
@@ -276,7 +308,14 @@ export class World {
     for (const load of this.loads) {
       if (load.state !== 'hooked') continue;
       const crane = this.cranes[load.hookedBy];
-      const hook = crane.getHookPos();
+      const tandemHooks = load.tandemCraneIds?.map((id) => this.cranes[id].getHookPos());
+      const hook = tandemHooks
+        ? [
+            (tandemHooks[0][0] + tandemHooks[1][0]) / 2,
+            (tandemHooks[0][1] + tandemHooks[1][1]) / 2,
+            (tandemHooks[0][2] + tandemHooks[1][2]) / 2,
+          ]
+        : crane.getHookPos();
       let ox = 0;
       let oz = 0;
       if (load.sway) {
@@ -289,11 +328,14 @@ export class World {
       if (crane.spec.physics?.loadYaw) {
         // 요 회전: 픽업 시 상대 자세를 유지하며 선회각을 스프링-감쇠로 지연 추종
         const target = crane.slewAngle + load._yawOffset;
-        load.yawVel += (-YAW_SPRING * (load.yaw - target) - YAW_DAMP * load.yawVel) * dt;
+        const tag = commands[load.hookedBy]?.tag ?? 0;
+        load.yawVel += (-YAW_SPRING * angleDelta(load.yaw, target) -
+          YAW_DAMP * load.yawVel + TAG_YAW_ACCEL * Math.max(-1, Math.min(1, tag))) * dt;
         load.yaw += load.yawVel * dt;
       }
     }
     this.#checkSafety();
+    this.#checkSiteRules();
     this.#checkCraneInterference();
     this.time += dt;
   }
@@ -470,7 +512,8 @@ export class World {
       this.lastEvent = '리깅 작업 중 — 완료까지 대기';
       return { ok: false, msg: this.lastEvent };
     }
-    const held = this.loads.find((l) => l.state === 'hooked' && l.hookedBy === craneId);
+    const held = this.loads.find((l) => l.state === 'hooked' &&
+      (l.hookedBy === craneId || l.tandemCraneIds?.includes(craneId)));
 
     if (held) return this.#release(craneId, crane, held);
     return this.#attach(craneId, crane);
@@ -495,6 +538,61 @@ export class World {
     return best;
   }
 
+  tandemLoadShares(load) {
+    if (!load?.tandem || load.liftPoints.length !== 2) return null;
+    const distances = load.liftPoints.map((p) =>
+      Math.max(1e-6, Math.hypot(p[0] - load.cog[0], p[1] - load.cog[1])));
+    const inverse = distances.map((d) => 1 / d);
+    const total = inverse[0] + inverse[1];
+    return inverse.map((v) => load.mass * v / total);
+  }
+
+  tandemAttachPreview(craneA, craneB, loadId = null) {
+    if (craneA === craneB || !this.cranes[craneA] || !this.cranes[craneB]) return null;
+    const load = this.loads.find((l) =>
+      l.state === 'ground' && l.tandem && (!loadId || l.id === loadId));
+    if (!load) return null;
+    const points = load.liftPoints.map((p) => [load.pos[0] + p[0], load.topY, load.pos[2] + p[1]]);
+    const hooks = [this.cranes[craneA].getHookPos(), this.cranes[craneB].getHookPos()];
+    const measure = (swap) => hooks.map((h, i) => {
+      const p = points[swap ? 1 - i : i];
+      return { horiz: Math.hypot(h[0] - p[0], h[2] - p[2]), vert: Math.abs(h[1] - p[1]) };
+    });
+    const direct = measure(false);
+    const swapped = measure(true);
+    const score = (items) => items.reduce((sum, item) => sum + item.horiz + item.vert, 0);
+    const offsets = score(direct) <= score(swapped) ? direct : swapped;
+    const shares = this.tandemLoadShares(load);
+    const craneIds = [craneA, craneB];
+    const capacityOk = shares.every((mass, i) => mass <= this.cranes[craneIds[i]].getCapacity());
+    const singleCraneLimiter = craneIds.map((id) => load.mass > this.cranes[id].getCapacity());
+    const block = this.#attachBlock(load);
+    return {
+      load, craneIds, offsets, shares, capacityOk, singleCraneLimiter,
+      ok: offsets.every((x) => x.horiz <= ATTACH_MAX_HORIZ && x.vert <= ATTACH_MAX_VERT) &&
+        capacityOk && !block,
+      blockReason: block?.reason ?? (!capacityOk ? 'capacity' : null),
+    };
+  }
+
+  tandemSyncPreview(loadId) {
+    const load = this.loads.find((l) =>
+      l.id === loadId && l.state === 'hooked' && l.tandemCraneIds);
+    if (!load) return null;
+    const hooks = load.tandemCraneIds.map((id) => this.cranes[id].getHookPos());
+    const actual = Math.hypot(hooks[0][0] - hooks[1][0], hooks[0][2] - hooks[1][2]);
+    const expected = Math.hypot(
+      load.liftPoints[0][0] - load.liftPoints[1][0],
+      load.liftPoints[0][1] - load.liftPoints[1][1],
+    );
+    const deviation = Math.abs(actual - expected);
+    return {
+      loadId, craneIds: [...load.tandemCraneIds], actual, expected, deviation,
+      warning: deviation > TANDEM_WARN_DEVIATION,
+      hold: deviation > TANDEM_HOLD_DEVIATION,
+    };
+  }
+
   /** 미충족 선행 부재 목록 (최종 안착 단계에만 적용) — 판정·미션 가이드 공용 */
   #unmetOf(load) {
     if (!load.finalLeg) return [];
@@ -512,6 +610,10 @@ export class World {
     if (this.windDef && this.windSpeed > this.windLimitFor(load)) {
       return { reason: 'wind', limit: this.windLimitFor(load) };
     }
+    if (load.sling?.blocked) return { reason: 'sling', sling: { ...load.sling } };
+    const weather = weatherAt(this.weatherDef, this.time);
+    if (weather.blocked) return { reason: 'weather', weather };
+    if (!shiftAt(this.shifts, this.time).available) return { reason: 'shift' };
     return null;
   }
 
@@ -561,7 +663,8 @@ export class World {
    */
   sweepPreview(craneId, stepDeg = 5) {
     const crane = this.cranes[craneId];
-    const held = this.loads.find((l) => l.state === 'hooked' && l.hookedBy === craneId);
+    const held = this.loads.find((l) => l.state === 'hooked' &&
+      (l.hookedBy === craneId || l.tandemCraneIds?.includes(craneId)));
     if (!crane || !held) return null;
     const [bx, , bz] = crane.basePos;
     const r = crane.getRadius();
@@ -618,7 +721,8 @@ export class World {
    * @returns {{zoneId:string, distance:number, min:number[], max:number[], near:boolean}|null}
    */
   nfzProximity(craneId, threshold = 3) {
-    const held = this.loads.find((l) => l.state === 'hooked' && l.hookedBy === craneId);
+    const held = this.loads.find((l) => l.state === 'hooked' &&
+      (l.hookedBy === craneId || l.tandemCraneIds?.includes(craneId)));
     if (!this.cranes[craneId] || !held || this.noFlyZones.length === 0) return null;
     let nearest = null;
     for (const zone of this.noFlyZones) {
@@ -645,7 +749,8 @@ export class World {
    */
   drivePathPreview(craneId, steer = 0, distance = 20, step = 1) {
     const crane = this.cranes[craneId];
-    const held = this.loads.find((l) => l.state === 'hooked' && l.hookedBy === craneId);
+    const held = this.loads.find((l) => l.state === 'hooked' &&
+      (l.hookedBy === craneId || l.tandemCraneIds?.includes(craneId)));
     if (!crane || !held || crane.driveYaw == null) return null;
     const ds = Math.max(0.25, step);
     const maxSpeed = crane.spec.planning?.driveSpeed ?? crane.spec.planning?.travelSpeed ?? 1;
@@ -671,7 +776,8 @@ export class World {
    */
   limitRadius(craneId) {
     const crane = this.cranes[craneId];
-    const held = this.loads.find((l) => l.state === 'hooked' && l.hookedBy === craneId);
+    const held = this.loads.find((l) => l.state === 'hooked' &&
+      (l.hookedBy === craneId || l.tandemCraneIds?.includes(craneId)));
     if (!crane || !held || !crane.getRadiusRange) return null;
     const [rMin, rMax] = crane.getRadiusRange();
     const factor = crane.driveVel != null && Math.abs(crane.driveVel) > 0.05
@@ -695,7 +801,8 @@ export class World {
    * @returns {{kind:'target'|'load', id:string, pos:number[]}|null}
    */
   guidanceTarget(craneId) {
-    const held = this.loads.find((l) => l.state === 'hooked' && l.hookedBy === craneId);
+    const held = this.loads.find((l) => l.state === 'hooked' &&
+      (l.hookedBy === craneId || l.tandemCraneIds?.includes(craneId)));
     if (held?.target) {
       return {
         kind: 'target',
@@ -723,9 +830,31 @@ export class World {
   }
 
   #attach(craneId, crane) {
+    for (const load of this.loads.filter((l) => l.state === 'ground' && l.tandem)) {
+      const nearOwnPoint = load.liftPoints.some((p) => {
+        const hook = crane.getHookPos();
+        return Math.hypot(hook[0] - load.pos[0] - p[0], hook[2] - load.pos[2] - p[1]) <= ATTACH_MAX_HORIZ &&
+          Math.abs(hook[1] - load.topY) <= ATTACH_MAX_VERT;
+      });
+      if (!nearOwnPoint) continue;
+      for (let partner = 0; partner < this.cranes.length; partner++) {
+        const preview = this.tandemAttachPreview(craneId, partner, load.id);
+        if (preview?.ok) return this.#finalizeTandemAttach(preview);
+      }
+      this.lastEvent = '탠덤 픽업 불가: 두 크레인 후크를 양단 인양점에 정렬하세요';
+      return { ok: false, msg: this.lastEvent };
+    }
     const best = this.#scanAttachEligible(crane);
     if (!best) {
       this.lastEvent = '픽업 실패: 근처에 부재 없음 (후크를 부재 위로)';
+      return { ok: false, msg: this.lastEvent };
+    }
+    if (best.tandem) {
+      for (let partner = 0; partner < this.cranes.length; partner++) {
+        const preview = this.tandemAttachPreview(craneId, partner, best.id);
+        if (preview?.ok) return this.#finalizeTandemAttach(preview);
+      }
+      this.lastEvent = '탠덤 픽업 불가: 두 크레인 후크를 양단 인양점에 정렬하세요';
       return { ok: false, msg: this.lastEvent };
     }
     const block = this.#attachBlock(best);
@@ -735,6 +864,19 @@ export class World {
     }
     if (block?.reason === 'wind') {
       this.lastEvent = `픽업 불가: 풍속 초과 (${this.windSpeed.toFixed(1)} > ${block.limit} m/s)`;
+      return { ok: false, msg: this.lastEvent };
+    }
+    if (block?.reason === 'sling') {
+      this.lastEvent = `픽업 불가: 슬링 각도 ${(block.sling.angle * 180 / Math.PI).toFixed(0)}° < ` +
+        `${(block.sling.minAngle * 180 / Math.PI).toFixed(0)}°`;
+      return { ok: false, msg: this.lastEvent };
+    }
+    if (block?.reason === 'weather') {
+      this.lastEvent = `픽업 불가: 기상 작업중지 (${block.weather.reasons.join(', ')})`;
+      return { ok: false, msg: this.lastEvent };
+    }
+    if (block?.reason === 'shift') {
+      this.lastEvent = '픽업 불가: 작업 교대시간 외';
       return { ok: false, msg: this.lastEvent };
     }
     // 리깅 시간이 정의된 부재는 줄걸이 작업(rigging)부터 — 크레인은 그동안 동결
@@ -768,13 +910,27 @@ export class World {
     return { ok: true, msg: this.lastEvent };
   }
 
+  #finalizeTandemAttach(preview) {
+    const { load, craneIds, shares } = preview;
+    load.state = 'hooked';
+    load.hookedBy = craneIds[0];
+    load.tandemCraneIds = [...craneIds];
+    craneIds.forEach((id, i) => {
+      this.cranes[id].loadMass = shares[i];
+      this.cranes[id].minHookY = load.size[1] + HOOK_GAP;
+    });
+    this.lastEvent = `탠덤 픽업: ${load.name} (${shares.map((v) => v.toFixed(1)).join('+')}t)`;
+    return { ok: true, msg: this.lastEvent, tandem: true, shares };
+  }
+
   /**
    * 해제(안착) 예비 판정 (순수 질의 — 상태 불변). 보조 UI 안착 가이드용.
    * @returns {{ held, support, bottomGap, canRelease, onTarget, err, tol, maxGap }|null}
    *   매달린 부재 없으면 null
    */
   releasePreview(craneId) {
-    const held = this.loads.find((l) => l.state === 'hooked' && l.hookedBy === craneId);
+    const held = this.loads.find((l) => l.state === 'hooked' &&
+      (l.hookedBy === craneId || l.tandemCraneIds?.includes(craneId)));
     if (!held) return null;
     // 지지면: 목표 위(허용오차 내)면 목표 바닥고(기둥 위 6m 등), 아니면 지면(0)
     let support = 0;
@@ -788,21 +944,32 @@ export class World {
       }
     }
     const bottomGap = held.bottomY - support;
+    const yawError = held.targetYaw == null ? null : angleDelta(held.yaw, held.targetYaw);
+    const yawOk = yawError == null || Math.abs(yawError) <= held.yawTolerance;
     return {
       held,
       support,
       bottomGap,
-      canRelease: bottomGap <= RELEASE_MAX_GAP,
+      canRelease: bottomGap <= RELEASE_MAX_GAP && (!onTarget || yawOk),
       onTarget,
       err,
       tol: PLACE_TOL,
       maxGap: RELEASE_MAX_GAP,
+      targetYaw: held.targetYaw,
+      yawError,
+      yawTolerance: held.yawTolerance,
+      yawOk,
     };
   }
 
   #release(craneId, crane, held) {
     const preview = this.releasePreview(craneId);
     if (!preview.canRelease) {
+      if (preview.onTarget && !preview.yawOk) {
+        this.lastEvent = `해제 불가: 자세 오차 ${(Math.abs(preview.yawError) * 180 / Math.PI).toFixed(1)}° ` +
+          `(허용 ${(preview.yawTolerance * 180 / Math.PI).toFixed(0)}°)`;
+        return { ok: false, msg: this.lastEvent };
+      }
       this.lastEvent = `해제 불가: 공중 해제 금지 (지지면과 ${preview.bottomGap.toFixed(1)}m)`;
       return { ok: false, msg: this.lastEvent };
     }
@@ -818,6 +985,13 @@ export class World {
 
   /** 해체 완료: 안착 판정·크레인 하중 해제 (즉시 해제·derigging 완료 공용) */
   #finalizePlace(crane, held) {
+    if (held.tandemCraneIds) {
+      for (const id of held.tandemCraneIds) {
+        this.cranes[id].loadMass = 0;
+        this.cranes[id].minHookY = 0;
+      }
+      held.tandemCraneIds = null;
+    }
     held.hookedBy = null;
     held.timer = 0;
     crane.loadMass = 0;
@@ -832,10 +1006,13 @@ export class World {
       const dz = held.pos[2] - held.target[1];
       const err = Math.hypot(dx, dz);
       if (err <= PLACE_TOL) {
+        const yawError = held.targetYaw == null ? 0 : angleDelta(held.yaw, held.targetYaw);
+        held.placementError = err;
+        held.placementYawError = yawError;
         held.pos[0] = held.target[0];
         held.pos[2] = held.target[1];
         held.pos[1] = held.targetElev + held.size[1] / 2; // 목표 바닥고 위에 안착
-        held.yaw = 0; // 위치 스냅과 동일 의미론 — 목표 안착은 축 정렬로 시공
+        held.yaw = held.targetYaw ?? 0;
         if (held.finalLeg) {
           held.state = 'placed';
           held.stageChangedAt = this.time;
@@ -867,6 +1044,45 @@ export class World {
     return targets.length > 0 && targets.every((l) => l.state === 'placed');
   }
 
+  completionScore(config = {}) {
+    return calculateScore(this.getState(), config);
+  }
+
+  siteRulePreview(craneId) {
+    const crane = this.cranes[craneId];
+    if (!crane) return null;
+    const held = this.loads.find((load) => load.state === 'hooked' &&
+      (load.hookedBy === craneId || load.tandemCraneIds?.includes(craneId)));
+    const geometry = craneGeometry(crane);
+    const points = [crane.getHookPos(), ...geometry.segments.flatMap((segment) => [segment.a, segment.b])];
+    if (held) points.push([...held.pos]);
+    const power = [
+      ...points.map((point) => powerLineClearance(point, this.powerLines)),
+      ...geometry.segments.map((segment) =>
+        segmentPowerLineClearance(segment.a, segment.b, this.powerLines)),
+    ]
+      .sort((a, b) => a.clearance - b.clearance)[0];
+    const height = points.map((point) => heightLimitAt(point, this.heightLimits))
+      .find((item) => !item.safe) ?? heightLimitAt(points[0], this.heightLimits);
+    return { power, height, weather: weatherAt(this.weatherDef, this.time),
+      shift: shiftAt(this.shifts, this.time) };
+  }
+
+  #checkSiteRules() {
+    this.siteRuleViolations = [];
+    for (let i = 0; i < this.cranes.length; i++) {
+      const preview = this.siteRulePreview(i);
+      if (preview && !preview.power.safe) this.siteRuleViolations.push(`power:${preview.power.lineId}`);
+      if (preview && !preview.height.safe) this.siteRuleViolations.push(`height:${preview.height.zoneId}`);
+    }
+    const violating = this.siteRuleViolations.length > 0;
+    if (violating && !this._prevSiteRuleViolation) {
+      this.siteRuleViolationCount += 1;
+      this.lastEvent = `⚠ 현장 제한 위반: ${this.siteRuleViolations.join(', ')}`;
+    }
+    this._prevSiteRuleViolation = violating;
+  }
+
   /**
    * 매달린 하중 기준 준정적 전도 안전율 (순수 질의).
    * 하중이 없거나 안정성 제원이 없는 크레인은 null.
@@ -874,13 +1090,14 @@ export class World {
    */
   stabilityPreview(craneId) {
     const crane = this.cranes[craneId];
-    const held = this.loads.find((l) => l.state === 'hooked' && l.hookedBy === craneId);
+    const held = this.loads.find((l) => l.state === 'hooked' &&
+      (l.hookedBy === craneId || l.tandemCraneIds?.includes(craneId)));
     if (!crane || !held) return null;
     const result = checkStability({
       spec: crane.spec,
       boomLength: crane.boomLength ?? crane.spec.geometry?.boomLength,
       radius: crane.getRadius(),
-      loadMass: held.mass,
+      loadMass: crane.loadMass,
     });
     return result.skipped ? null : result.tippingMargin;
   }
@@ -917,11 +1134,28 @@ export class World {
         agentHolds: [...this.agentHolds],
         agentHoldCount: this.agentHoldCount,
         agentHoldTime: this.agentHoldTime,
+        tandemHolds: [...this.tandemHolds],
+        tandemHoldTime: this.tandemHoldTime,
+        tandem: this.loads.filter((l) => l.tandemCraneIds).map((l) => this.tandemSyncPreview(l.id)),
         dangerRadius: this.agentRules.dangerRadius,
+        siteRuleViolations: [...this.siteRuleViolations],
+        siteRuleViolationCount: this.siteRuleViolationCount,
+      },
+      operations: {
+        weather: weatherAt(this.weatherDef, this.time),
+        shift: shiftAt(this.shifts, this.time),
       },
       lastEvent: this.lastEvent,
     };
   }
+}
+
+/** 두 각도의 최단 부호 오차(from-target), 범위 [-π, π]. */
+export function angleDelta(from, target) {
+  let delta = from - target;
+  while (delta > Math.PI) delta -= Math.PI * 2;
+  while (delta < -Math.PI) delta += Math.PI * 2;
+  return delta;
 }
 
 /**

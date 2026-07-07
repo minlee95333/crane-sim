@@ -3,6 +3,7 @@
 import { checkPair } from '../core/Interference.js';
 import { Simulation } from '../sim/Simulation.js';
 import { SchedulePlayer } from './SchedulePlayer.js';
+import { heightLimitAt, powerLineClearance, segmentPowerLineClearance } from '../core/SiteRules.js';
 
 const TAIL_SIZE = 1.5;
 
@@ -154,6 +155,26 @@ function detectAt(scenario, state) {
       }
     }
   }
+  state.cranes.forEach((crane, index) => {
+    const craneId = scenario.cranes[index].id;
+    const geometry = geometries[index];
+    const power = [
+      powerLineClearance(crane.hookPos, scenario.powerLines ?? []),
+      ...geometry.segments.map((segment) =>
+        segmentPowerLineClearance(segment.a, segment.b, scenario.powerLines ?? [])),
+    ].sort((a, b) => a.clearance - b.clearance)[0];
+    if (!power.safe) detections.push({
+      key: `power:${craneId}:${power.lineId}`, type: 'powerLineClearance',
+      craneId, lineId: power.lineId, clearance: power.clearance,
+    });
+    const height = [crane.hookPos, ...geometry.segments.flatMap((segment) => [segment.a, segment.b])]
+      .map((point) => heightLimitAt(point, scenario.heightLimits ?? []))
+      .find((item) => !item.safe) ?? heightLimitAt(crane.hookPos, scenario.heightLimits ?? []);
+    if (!height.safe) detections.push({
+      key: `height:${craneId}:${height.zoneId}`, type: 'heightLimit',
+      craneId, zoneId: height.zoneId,
+    });
+  });
   return detections;
 }
 
@@ -165,6 +186,25 @@ export function validateSchedule3D(scenario, result, options = {}) {
   const baseState = sim.getState();
   const active = new Map();
   const violations = [];
+  for (const assignment of result.assignments.filter((a) => a.tandem)) {
+    const lifts = result.events.filter((e) =>
+      e.assignmentId === assignment.assignmentId && e.type === 'lift');
+    const ids = new Set(lifts.map((e) => e.craneId));
+    const synchronized = lifts.length === 2 &&
+      ids.size === 2 &&
+      Math.abs(lifts[0].start - lifts[1].start) < 1e-9 &&
+      Math.abs(lifts[0].finish - lifts[1].finish) < 1e-9;
+    if (!synchronized || assignment.craneIds?.some((id) => !ids.has(id))) {
+      violations.push({
+        key: `tandem-sync:${assignment.assignmentId}`,
+        type: 'tandemSynchronization',
+        loadId: assignment.loadId,
+        craneIds: assignment.craneIds,
+        start: assignment.liftStart,
+        end: assignment.liftFinish,
+      });
+    }
+  }
   let samples = 0;
 
   for (let time = 0; time <= result.makespan + 1e-9; time += sampleStep) {

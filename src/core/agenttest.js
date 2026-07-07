@@ -129,6 +129,13 @@ console.log('--- 차량 순환·대기 ---');
   }
   check('차량이 60s 동안 루트 4코너를 모두 경유', best.every((d) => d < 2));
 
+  const many = makeWorld({
+    agents: { seed: 9, vehicles: [{ ...WANDER.vehicles[0], count: 7 }] },
+    crane: false,
+  });
+  const uniqueStarts = new Set(many.agents.map((agent) => agent.pos.map((v) => v.toFixed(6)).join(',')));
+  check('경로 점보다 많은 차량도 시작 위치가 겹치지 않음', many.agents.length === 7 && uniqueStarts.size === 7);
+
   const blocked = makeWorld({
     agents: { seed: 9, vehicles: WANDER.vehicles },
     cranePos: [0, 0, 10], // 상단 도로(z=10) 위에 크레인 주기 — 차량이 앞에서 대기해야 함

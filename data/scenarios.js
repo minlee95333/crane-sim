@@ -421,6 +421,100 @@ const S12 = {
   rigging: { rigTime: 30, derigTime: 15 },
 };
 
+/** S13 — 70t 장대 거더를 100t급 크롤러 2대가 35t씩 공동 인양한다. */
+const S13 = {
+  site: { width: 100, depth: 70, minX: -50, minZ: -35 },
+  cranes: [
+    { ...CRAWLER_100T, id: 'TC-A', name: 'Tandem Crawler A', basePos: [-14, 0, -12] },
+    { ...CRAWLER_100T, id: 'TC-B', name: 'Tandem Crawler B', basePos: [14, 0, -12] },
+  ],
+  loads: [{
+    id: 'TG-70', name: '70t 장대 거더', size: [20, 1.4, 1.2], mass: 70,
+    shape: 'h-beam', pos: [0, 0, 0], target: [0, 22], tandem: true,
+    liftPoints: [[-8, 0], [8, 0]], cog: [0, 0], duration: 900,
+  }],
+  obstacles: [],
+  noFlyZones: [],
+  planning: { defaultLiftDuration: 900, includeFinalTeardown: false },
+};
+
+/** S14 — 태그라인으로 장대 거더를 목표 방위에 맞추고 슬링/채점을 확인한다. */
+const S14 = {
+  site: { width: 70, depth: 60, minX: -35, minZ: -30 },
+  cranes: [{
+    ...CRAWLER_100T,
+    id: 'TAG-01',
+    name: 'Tagline Crawler',
+    physics: { ...(CRAWLER_100T.physics ?? {}), loadYaw: true },
+  }],
+  loads: [{
+    id: 'YG-1',
+    name: '방위 제어 거더',
+    size: [10, 0.9, 0.6],
+    mass: 6,
+    shape: 'h-beam',
+    pos: [21.2, 0, 0],
+    target: onArc(21.2, 55),
+    targetYaw: deg(90),
+    yawTolerance: deg(10),
+    slingHeight: 10,
+    rigTime: 20,
+    derigTime: 10,
+  }],
+  obstacles: [],
+  noFlyZones: [],
+  scoring: { parTime: 180, violationPenalty: 12, holdPenaltyPerSecond: 0.1 },
+};
+
+/** S15 — P7.15~P7.20 통합 현실 현장: 전력선·기상·인력·야적·지반·조립물류. */
+const OPS_CRANE = {
+  ...CRAWLER_100T,
+  id: 'OPS-01',
+  name: 'Operations Crawler',
+  outrigger: {
+    points: [[-3, -3], [3, -3], [-3, 3], [3, 3]],
+    padArea: 2.5,
+  },
+  configurations: [
+    { id: 'boom40', boomLength: 40, assemblyArea: [18, 8], duration: 900, cost: 500000, trucks: 1 },
+    { id: 'boom52', boomLength: 52, assemblyArea: [30, 10], duration: 2400, cost: 1500000,
+      trucks: 2, assistCraneRequired: true },
+  ],
+};
+const S15 = {
+  site: { width: 100, depth: 70, minX: -50, minZ: -35 },
+  cranes: [OPS_CRANE],
+  loads: [
+    { id: 'OP-A', name: '선행 기둥', size: [2, 8, 2], mass: 8, pos: [18, 0, -12],
+      target: [10, 15], resourceRequirements: { rigger: 2 }, erectionOrder: 0 },
+    { id: 'OP-B', name: '후속 거더', size: [10, 1, 1], mass: 7, pos: [22, 0, -8],
+      target: [15, 18], dependsOn: ['OP-A'], resourceRequirements: { rigger: 2, signaler: 1 },
+      erectionOrder: 1 },
+  ],
+  obstacles: [],
+  noFlyZones: [],
+  powerLines: [{ id: 'PL-1', a: [-35, 14, 5], b: [35, 14, 5], clearance: 6 }],
+  heightLimits: [{ id: 'HL-1', min: [25, 10], max: [45, 30], maxHeight: 18 }],
+  weather: {
+    rain: { timeline: [[0, 12], [300, 0]] },
+    maxRain: 10,
+    lightning: { value: 20 },
+    minLightningDistance: 10,
+    visibility: { value: 500 },
+    minVisibility: 200,
+  },
+  shifts: [{ id: 'day', start: 0, end: 12 * 3600 }],
+  resources: [{ type: 'rigger', count: 2 }, { type: 'signaler', count: 1 }],
+  laydown: {
+    slots: [{ id: 'Y-1', size: [12, 4], maxLayers: 2, maxMass: 12 }],
+    rehandleDuration: 180,
+  },
+  ground: { bearingCapacity: 30 },
+  groundZones: [{ id: 'soft', min: [0, -8], max: [15, 8], bearingCapacity: 8 }],
+  logistics: { assemblyArea: [35, 12], assistCranes: 1 },
+  planning: { defaultLiftDuration: 600 },
+};
+
 export const SCENARIOS = [
   { id: 'free', name: '자유 연습', desc: '목표 없음 — 부재 4종 자유 조작', scenario: DEFAULT_SCENARIO },
   { id: 'place-basic', name: 'S1 기본 안착', desc: '픽업 → 선회 40° → 목표 안착', scenario: S1 },
@@ -435,4 +529,7 @@ export const SCENARIOS = [
   { id: 'pick-carry', name: 'S10 픽앤캐리 통로', desc: '픽업·목표 78m 이격 — 하중 매단 채 주행(감격 정격·주행 전도)으로 안착', scenario: S10 },
   { id: 'storm-rig', name: 'S11 강풍 리깅', desc: '바람 외력→흔들림·부재 요 회전·이중진자 ON — 거스트 창에서 정밀 안착', scenario: S11 },
   { id: 'ground-traffic', name: 'S12 지상 인원·장비', desc: '인원 5명 배회 + 지게차 순환 — 위험 반경 6m 진입 시 작업 홀드(신호수 규칙), 시드 결정론', scenario: S12 },
+  { id: 'tandem-lift', name: 'S13 탠덤 리프트', desc: '1대 정격을 넘는 70t 장대 거더를 크롤러 2대가 동기 공동 인양', scenario: S13 },
+  { id: 'yaw-rig-score', name: 'S14 자세·슬링·채점', desc: 'Z/X 태그라인으로 거더를 90° 방위에 정렬하고 안착 정확도·안전·시간을 채점', scenario: S14 },
+  { id: 'operations-site', name: 'S15 통합 현실 현장', desc: '전력선·고도·기상·교대·공유인력·야적·개별지반·조립물류 통합', scenario: S15 },
 ];

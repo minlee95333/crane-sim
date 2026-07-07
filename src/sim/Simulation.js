@@ -53,10 +53,12 @@ export class Simulation {
     }
     this.world.setWind(this.scenario.wind ?? null);
     this.world.siteBounds = this.scenario.site ?? null; // 주행 이탈 방지 경계
+    this.world.setOperationalRules(this.scenario);
     // 지상 인원·장비 (scenario.agents 정의된 시나리오만 — 시드 결정론 이동)
     const built = buildAgents(this.scenario);
     for (const agent of built.agents) this.world.addAgent(agent);
     this.world.setAgentRules(built.rules);
+    this.world.scoringDef = this.scenario.scoring ?? {};
     this.accumulator = 0;
     return this.getState();
   }
@@ -96,6 +98,10 @@ export class Simulation {
 
   getState() {
     return this.world.getState();
+  }
+
+  completionScore() {
+    return this.world.completionScore(this.scenario.scoring ?? {});
   }
 }
 

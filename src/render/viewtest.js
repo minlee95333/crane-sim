@@ -85,6 +85,7 @@ console.log('--- 부재 형상·슬링·리깅 연출 ---');
   const girder = { id: 'hb', name: 'H거더', size: [8, 0.8, 0.5], shape: 'h-beam', mass: 5,
     pos: [0, 0.4, 0], state: 'ground', yaw: 0 };
   const lv = new LoadView([girder]);
+  check('부재 뷰에 3D 편집 식별자 부여', lv.meshes.get('hb').userData.visualEdit.id === 'hb');
   const bbox = new THREE.Box3().setFromObject(lv.meshes.get('hb'));
   const dims = bbox.getSize(new THREE.Vector3());
   check(
@@ -103,6 +104,8 @@ console.log('--- 부재 형상·슬링·리깅 연출 ---');
     '슬링이 부재 폭(±4m 모서리) 방향으로 벌어짐',
     Math.min(...cornerX) < 9 && Math.max(...cornerX) > 11,
   );
+  lv.update([{ ...hooked, sling: { warning: true, blocked: false } }], [], [craneState], 1.1);
+  check('위험 슬링 각도는 호박색으로 표시', slings.every((rope) => rope.material.color.getHex() === 0xe0a53a));
 
   // 리깅 진행률: 절반 진행 시 슬링 일부만, 작업자 크루 표시
   const rigging = { ...girder, pos: [10, 0.4, 0], state: 'rigging', hookedBy: 0,
@@ -193,6 +196,18 @@ console.log('--- 보조 오버레이 (씬 앵커) ---');
     '홀드 중 위험반경 링 적색 + 침입자 마커',
     ov.dangerRing.visible && ov.dangerRing.material === ov.mats.danger &&
       ov.intruderMarks[0].visible && Math.abs(ov.dangerRing.scale.x - 6) < 0.5,
+  );
+  ov.update(baseState, 0, {
+    live: true,
+    release: {
+      held: { ...held, targetYaw: Math.PI / 2 },
+      support: 0, bottomGap: 0.2, canRelease: false, onTarget: true,
+      err: 0.3, tol: 1.5, maxGap: 0.5, yawError: Math.PI / 4, yawOk: false,
+    },
+  });
+  check(
+    'targetYaw 목표 방위 고스트 표시',
+    ov.yawGhost.visible && Math.abs(ov.yawGhost.rotation.y + Math.PI / 2) < 1e-9,
   );
 
   // 스윕 예고: 위험 샘플 정점이 적색, 위험 디스크 배치

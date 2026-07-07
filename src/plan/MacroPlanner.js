@@ -4,12 +4,54 @@
 import { evaluateSetup, radiusRangeOf } from './SetupPlanner.js';
 import { pointInZone, shortestPath } from './PathPlanner.js';
 import { Truck, deriveTrucks } from '../core/Truck.js';
+import { evaluateLaydown } from '../core/SiteRules.js';
 
 const xz = (p) => (p.length === 3 ? [p[0], p[2]] : [p[0], p[1]]);
 const d2 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
 const samePoint = (a, b, eps = 0.25) => d2(a, b) <= eps;
 
 export const PLAN_POLICIES = ['earliestFinish', 'nearest', 'radiusPriority'];
+
+function tandemShares(load) {
+  const points = load.liftPoints ?? [[-Math.max(load.size[0], load.size[2]) * 0.4, 0],
+    [Math.max(load.size[0], load.size[2]) * 0.4, 0]];
+  const cog = load.cog ?? [0, 0];
+  const inverse = points.map((p) => 1 / Math.max(1e-6, Math.hypot(p[0] - cog[0], (p[1] ?? 0) - (cog[1] ?? 0))));
+  const total = inverse[0] + inverse[1];
+  return inverse.map((v) => load.mass * v / total);
+}
+
+/** 탠덤 부재 1건의 크레인쌍 후보. 각 크레인은 분담 하중으로 기존 셋업 판정을 재사용한다. */
+export function tandemCandidates(scenario, lift, craneStates, options = {}) {
+  if (!lift.tandem || craneStates.length < 2) return [];
+  const shares = tandemShares(lift);
+  const points = lift.liftPoints ?? [[-Math.max(lift.size[0], lift.size[2]) * 0.4, 0],
+    [Math.max(lift.size[0], lift.size[2]) * 0.4, 0]];
+  const out = [];
+  for (let a = 0; a < craneStates.length; a++) {
+    for (let b = a + 1; b < craneStates.length; b++) {
+      const states = [craneStates[a], craneStates[b]];
+      const setups = states.map((state, i) => {
+        const part = {
+          ...lift,
+          tandem: false,
+          mass: shares[i],
+          pos: [lift.pos[0] + points[i][0], lift.pos[1], lift.pos[2] + (points[i][1] ?? 0)],
+          target: [lift.target[0] + points[i][0], lift.target[1], lift.target[2] + (points[i][1] ?? 0)],
+        };
+        return setupCandidates(state.spec, part, scenario, state.pos, options)[0] ?? null;
+      });
+      if (setups.every(Boolean)) out.push({
+        craneStates: states,
+        craneIds: states.map((s) => s.spec.id),
+        setups,
+        shares,
+        move: setups[0].path.distance + setups[1].path.distance,
+      });
+    }
+  }
+  return out;
+}
 
 export function validatePlanningScenario(scenario) {
   const errors = [];
@@ -199,7 +241,8 @@ export function setupCandidates(spec, lift, scenario, currentPos, opts = {}) {
   const found = [];
   for (const boomLength of boomOptions(spec)) {
     for (const pos of unique) {
-      const ev = evaluateSetup(spec, { pos, boomLength }, [lift], scenario);
+      const configId = spec.configurations?.find((config) => config.boomLength === boomLength)?.id;
+      const ev = evaluateSetup(spec, { pos, boomLength, configId }, [lift], scenario);
       if (!ev.feasible) continue;
       const path = shortestPath(currentPos, pos, zones, { clearance: bodyClearance });
       if (!path.ok) continue;
@@ -216,6 +259,8 @@ export function setupCandidates(spec, lift, scenario, currentPos, opts = {}) {
         capacityMargin: ev.minCapMargin,
         tippingMargin: ev.minTipMargin,
         groundPressure: ev.maxGroundPressure,
+        assemblyTime: ev.assembly?.duration ?? 0,
+        assemblyCost: ev.assembly?.cost ?? 0,
       });
     }
   }
@@ -260,6 +305,8 @@ export function evaluateSetupCandidate(spec, lift, scenario, currentPos, pos, bo
     capacityMargin: evaluation.minCapMargin,
     tippingMargin: evaluation.minTipMargin,
     groundPressure: evaluation.maxGroundPressure,
+    assemblyTime: evaluation.assembly?.duration ?? 0,
+    assemblyCost: evaluation.assembly?.cost ?? 0,
   };
 }
 
@@ -350,7 +397,9 @@ export function candidateOutcome(scenario, craneState, lift, completed, assignme
   const teardownTime = same || craneState.jobs === 0 ? 0 : (planning.teardownTime ?? 300);
   const travelSpeed = Math.max(0.01, planning.travelSpeed ?? 1.5);
   const travelTime = same ? 0 : setup.path.distance / travelSpeed;
-  const setupTime = same && craneState.jobs > 0 ? 0 : (planning.setupTime ?? (spec.type === 'tower' ? 0 : 600));
+  const setupTime =
+    (same && craneState.jobs > 0 ? 0 : (planning.setupTime ?? (spec.type === 'tower' ? 0 : 600))) +
+    (setup.assemblyTime ?? 0);
   const liftDuration = lift.duration ?? scenario.planning?.defaultLiftDuration ?? 1200;
 
   const initialAvailable = craneState.available;
@@ -453,6 +502,7 @@ export function candidateOutcome(scenario, craneState, lift, completed, assignme
     teardownStart, teardownFinish, travelStart, travelFinish,
     setupStart, setupFinish, liftStart, liftFinish,
     teardownTime, travelTime, setupTime, liftDuration,
+    assemblyCost: setup.assemblyCost ?? 0,
     spatialWait,
     hardConflicts,
     softConflicts: [],
@@ -490,7 +540,24 @@ export function generateMacroPlan(scenario, options = {}) {
     available: 0,
     jobs: 0,
   }));
+  const laydown = evaluateLaydown(scenario.loads ?? [], scenario.laydown);
+  if (!laydown.feasible) {
+    return {
+      policy, assignments: [], events: [], makespan: 0, completed: 0,
+      total: planningLifts(scenario).length,
+      failed: [{ loadId: null, reason: `야적장 용량 부족 (${laydown.reason})` }],
+      hardConflicts: 0, softConflicts: 0, perCrane: [], laydown,
+    };
+  }
+  const rehandleDuration = scenario.laydown?.rehandleDuration ?? 0;
+  const rehandleCount = laydown.rehandles.reduce((sum, item) => sum + item.count, 0);
+  if (craneStates[0] && rehandleCount > 0) {
+    craneStates[0].available = rehandleCount * rehandleDuration;
+  }
   const lifts = planningLifts(scenario);
+  if (lifts.length > 0 && lifts.every((lift) => lift.tandem)) {
+    return generateTandemMacroPlan(scenario, lifts, craneStates, options);
+  }
   const remaining = new Map(lifts.map((l) => [l.jobId, l]));
   const completed = new Map();
   const assignments = [];
@@ -541,6 +608,10 @@ export function generateMacroPlan(scenario, options = {}) {
   for (const lift of remaining.values()) failed.push({ loadId: lift.id, reason: '선행 작업 미완료 또는 계획 데드락' });
 
   const events = [];
+  if (rehandleCount > 0 && craneStates[0]) {
+    phase(events, 'laydown:rehandle', craneStates[0].spec.id, null, 'rehandle',
+      0, rehandleCount * rehandleDuration, { count: rehandleCount });
+  }
   for (const a of assignments) {
     phase(events, a.assignmentId, a.craneId, a.loadId, 'spaceWait', a.teardownStart - a.spatialWait, a.teardownStart);
     phase(events, a.assignmentId, a.craneId, a.loadId, 'teardown', a.teardownStart, a.teardownFinish);
@@ -585,5 +656,95 @@ export function generateMacroPlan(scenario, options = {}) {
     hardConflicts: assignments.reduce((s, a) => s + a.hardConflicts.length, 0),
     softConflicts: assignments.reduce((s, a) => s + a.softConflicts.length, 0),
     perCrane,
+    laydown,
+    rehandleCount,
   };
+}
+
+function generateTandemMacroPlan(scenario, lifts, craneStates, options) {
+  const assignments = [];
+  const events = [];
+  const failed = [];
+  for (const lift of lifts) {
+    const candidates = tandemCandidates(scenario, lift, craneStates, options)
+      .sort((a, b) => {
+        const af = Math.max(...a.craneStates.map((s) => s.available)) + a.move;
+        const bf = Math.max(...b.craneStates.map((s) => s.available)) + b.move;
+        return af - bf || a.craneIds.join(':').localeCompare(b.craneIds.join(':'));
+      });
+    const best = candidates[0];
+    if (!best) {
+      failed.push({ loadId: lift.loadId, reason: '탠덤 크레인쌍·셋업 후보 없음' });
+      continue;
+    }
+    const duration = lift.duration ?? scenario.planning?.defaultLiftDuration ?? 1200;
+    const ready = best.craneStates.map((state, i) => {
+      const planning = state.spec.planning ?? {};
+      const travel = best.setups[i].path.distance / Math.max(0.01, planning.travelSpeed ?? 1.5);
+      return state.available + travel + (planning.setupTime ?? 600);
+    });
+    const liftStart = Math.max(...ready, lift.arriveTime ?? 0);
+    const liftFinish = liftStart + duration;
+    const assignmentId = `${best.craneIds.join('+')}:${lift.jobId}`;
+    const cranePlans = best.craneStates.map((state, i) => {
+      const setup = best.setups[i];
+      const planning = state.spec.planning ?? {};
+      const travelTime = setup.path.distance / Math.max(0.01, planning.travelSpeed ?? 1.5);
+      const travelStart = state.available;
+      const travelFinish = travelStart + travelTime;
+      const setupStart = travelFinish;
+      const setupFinish = setupStart + (planning.setupTime ?? 600);
+      return {
+        craneId: state.spec.id, fromPos: [...state.pos], setupPos: [...setup.pos],
+        movePath: setup.path.path, boomLength: setup.boomLength,
+        travelStart, travelFinish, setupStart, setupFinish,
+      };
+    });
+    const assignment = {
+      assignmentId, tandem: true, craneIds: [...best.craneIds], craneId: best.craneIds[0],
+      loadId: lift.loadId, jobId: lift.jobId, stage: lift.stage, stages: lift.stages,
+      pickupPos: [...lift.pos], targetPos: [...lift.target], loadShares: [...best.shares],
+      liftPoints: lift.liftPoints, cranePlans, liftStart, liftFinish, liftDuration: duration,
+      hardConflicts: [], softConflicts: [],
+    };
+    assignments.push(assignment);
+    for (const plan of cranePlans) {
+      phase(events, assignmentId, plan.craneId, lift.loadId, 'travel', plan.travelStart, plan.travelFinish,
+        { path: plan.movePath, tandem: true });
+      phase(events, assignmentId, plan.craneId, lift.loadId, 'setup', plan.setupStart, plan.setupFinish,
+        { tandem: true });
+      phase(events, assignmentId, plan.craneId, lift.loadId, 'waiting', plan.setupFinish, liftStart,
+        { tandem: true });
+      phase(events, assignmentId, plan.craneId, lift.loadId, 'lift', liftStart, liftFinish,
+        { tandem: true, partnerIds: best.craneIds.filter((id) => id !== plan.craneId) });
+    }
+    best.craneStates.forEach((state, i) => {
+      state.pos = [...best.setups[i].pos];
+      state.available = liftFinish;
+      state.jobs += 1;
+    });
+  }
+  const makespan = Math.max(0, ...craneStates.map((s) => s.available));
+  return {
+    policy: options.policy ?? 'earliestFinish', assignments, events,
+    makespan, completed: assignments.length, total: lifts.length, failed,
+    hardConflicts: 0, softConflicts: 0,
+    perCrane: craneStates.map((state) => ({
+      craneId: state.spec.id, jobs: state.jobs,
+      busyTime: events.filter((e) => e.craneId === state.spec.id && e.type !== 'waiting')
+        .reduce((sum, e) => sum + e.duration, 0),
+      idleTime: 0,
+      travelDistance: assignments.reduce((sum, a) => {
+        const plan = a.cranePlans.find((p) => p.craneId === state.spec.id);
+        return sum + (plan ? pathLength(plan.movePath) : 0);
+      }, 0),
+      setupChanges: state.jobs,
+    })),
+  };
+}
+
+function pathLength(path) {
+  let total = 0;
+  for (let i = 1; i < (path?.length ?? 0); i++) total += d2(path[i - 1], path[i]);
+  return total;
 }

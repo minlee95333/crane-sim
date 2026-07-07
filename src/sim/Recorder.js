@@ -14,7 +14,7 @@ export class Recorder {
   start(scenarioId) {
     this.active = true;
     this.data = {
-      version: 1,
+      version: 2,
       scenarioId,
       createdAt: new Date().toISOString(),
       frames: [],
@@ -33,15 +33,19 @@ export class Recorder {
     this.data.frames.push({
       dt,
       ts,
-      cmds: cmds.map((c) => ({ slew: c.slew ?? 0, luff: c.luff ?? 0, hoist: c.hoist ?? 0 })),
+      cmds: cmds.map((c) => ({
+        slew: c.slew ?? 0, luff: c.luff ?? 0, hoist: c.hoist ?? 0,
+        drive: c.drive ?? 0, steer: c.steer ?? 0, tag: c.tag ?? 0,
+      })),
       at: attachCraneId,
     });
   }
 
   /** 기록 종료 → 기록 객체 반환 */
-  stop() {
+  stop(score = null) {
     this.active = false;
     const d = this.data;
+    if (d && score) d.score = structuredClone(score);
     return d;
   }
 

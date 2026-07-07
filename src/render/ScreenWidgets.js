@@ -48,6 +48,13 @@ export function selectBanner(state, activeCrane, crane, live, nfz) {
   if ((state.safety?.agentHolds ?? []).includes(activeCrane)) {
     return { html: '⛔ 지상 인원·장비 접근 — 작업 일시정지', cls: 'danger' };
   }
+  const tandem = (state.safety?.tandem ?? []).find((item) => item.craneIds.includes(activeCrane));
+  if (tandem?.hold) {
+    return { html: `⛔ 탠덤 동기 이탈 ${tandem.deviation.toFixed(2)}m — 두 크레인 홀드`, cls: 'danger' };
+  }
+  if (tandem?.warning) {
+    return { html: `⚠ 탠덤 후크 간격 ${tandem.actual.toFixed(1)}m / 목표 ${tandem.expected.toFixed(1)}m`, cls: 'work' };
+  }
   if (crane.extra?.limiterActive) {
     return { html: '⚠ 모멘트 리미터 작동 — 반경을 줄이세요', cls: 'danger' };
   }
@@ -88,6 +95,7 @@ export class ScreenWidgets {
       <div class="ov-label" hidden></div>
       <div class="ov-target-arrow" hidden>➤</div>
       <div class="ov-onboard" hidden></div>
+      <div class="ov-score" hidden></div>
     `;
     this.gaugeCanvas = container.querySelector('.ov-gauge canvas');
     this.mapCanvas = container.querySelector('.ov-minimap canvas');
@@ -98,6 +106,7 @@ export class ScreenWidgets {
     this.label = container.querySelector('.ov-label');
     this.targetArrow = container.querySelector('.ov-target-arrow');
     this.onboard = container.querySelector('.ov-onboard');
+    this.scoreCard = container.querySelector('.ov-score');
     this._onboardUntil = 0;
     this._lastBanner = null;
     this._lastLabel = null;
@@ -148,6 +157,19 @@ export class ScreenWidgets {
       `<em>화살표 선회·기복 / Q·E 권상 / WASD 주행 / Space 픽업 / H 보조UI</em>`;
     this.onboard.hidden = false;
     this._onboardUntil = Date.now() + 6000;
+  }
+
+  showScore(score) {
+    if (!this.ok || !score) return;
+    this.scoreCard.innerHTML =
+      `<strong>${'★'.repeat(score.stars)}${'☆'.repeat(5 - score.stars)} · ${score.value.toFixed(0)}점</strong>` +
+      `<span>시간 ${score.time.toFixed(1)}s · 위치 ${score.positionError.toFixed(2)}m · ` +
+      `자세 ${(score.yawError * 180 / Math.PI).toFixed(1)}° · 안전위반 ${score.violations}</span>`;
+    this.scoreCard.hidden = false;
+  }
+
+  hideScore() {
+    if (this.ok) this.scoreCard.hidden = true;
   }
 
   // ── 하중률 게이지: 반경→정격 곡선 위 현재 작업점 ──
@@ -430,10 +452,15 @@ export class ScreenWidgets {
     let cls = '';
     if (live && camera) {
       if (release?.held?.target) {
+        const yawText = release.yawError == null
+          ? ''
+          : ` · 자세 ${Math.abs(release.yawError * 180 / Math.PI).toFixed(1)}°`;
         text = release.onTarget
           ? release.canRelease
-            ? '안착 가능 — Space'
-            : `내리세요 · 바닥까지 ${release.bottomGap.toFixed(1)}m`
+            ? `안착 가능 — Space${yawText}`
+            : !release.yawOk
+              ? `태그라인 Z/X로 정렬${yawText}`
+              : `내리세요 · 바닥까지 ${release.bottomGap.toFixed(1)}m${yawText}`
           : `목표까지 ${release.err.toFixed(1)}m`;
         cls = release.onTarget && release.canRelease ? 'ok' : release.onTarget ? 'near' : '';
         anchor = [release.held.pos[0], release.held.pos[1] + release.held.size[1] / 2 + 1.2, release.held.pos[2]];

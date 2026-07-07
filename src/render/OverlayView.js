@@ -169,6 +169,23 @@ export class OverlayView {
     this.swayArrow.add(head);
     this.root.add(this.swayArrow);
 
+    // ── 탠덤 상대 크레인 가이드: 두 후크 연결선(코어 동기 판정 색상) ──
+    this.tandemGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+    this.tandemLine = new THREE.Line(this.tandemGeo, new THREE.LineBasicMaterial({
+      color: COLOR.ok, transparent: true, opacity: 0.95, depthWrite: false,
+    }));
+    this.root.add(this.tandemLine);
+
+    // ── 목표 방위 고스트: targetYaw가 있는 부재의 목표 외곽선 ──
+    this.yawGhost = new THREE.LineLoop(
+      new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(-0.5, 0, -0.5), new THREE.Vector3(0.5, 0, -0.5),
+        new THREE.Vector3(0.5, 0, 0.5), new THREE.Vector3(-0.5, 0, 0.5),
+      ]),
+      new THREE.LineBasicMaterial({ color: COLOR.ok, transparent: true, opacity: 0.8, depthWrite: false }),
+    );
+    this.root.add(this.yawGhost);
+
     // ── 미션 마커: ready=녹 다이아 바운스 / 잠김=회백 정지 (풀 12) ──
     this.missionMarks = [];
     for (let i = 0; i < 12; i++) {
@@ -220,6 +237,8 @@ export class OverlayView {
     this.driveLine.visible = false;
     this.drivePoints.visible = false;
     this.swayArrow.visible = false;
+    this.tandemLine.visible = false;
+    this.yawGhost.visible = false;
     for (const mark of this.missionMarks) mark.visible = false;
     this.trailLine.visible = false;
   }
@@ -281,6 +300,19 @@ export class OverlayView {
     if (!crane) return;
     const hook = crane.hookPos;
     const holding = release != null;
+    const tandem = (state.safety?.tandem ?? []).find((item) => item.craneIds.includes(activeCrane));
+    if (tandem) {
+      const partnerId = tandem.craneIds.find((id) => id !== activeCrane);
+      const partner = state.cranes?.[partnerId];
+      if (partner) {
+        this.tandemGeo.setFromPoints([
+          new THREE.Vector3(...hook),
+          new THREE.Vector3(...partner.hookPos),
+        ]);
+        this.tandemLine.material.color.setHex(tandem.hold ? COLOR.danger : tandem.warning ? COLOR.near : COLOR.ok);
+        this.tandemLine.visible = true;
+      }
+    }
 
     if (nfz?.near) {
       const [minX, minZ] = nfz.min;
@@ -368,6 +400,13 @@ export class OverlayView {
     } else {
       // ── 매달림: 안착 가이드 + 리드라인 + 위험 반경 ──
       const held = release.held;
+      if (held.targetYaw != null && held.target) {
+        this.yawGhost.visible = true;
+        this.yawGhost.position.set(held.target[0], held.targetElev + 0.08, held.target[1]);
+        this.yawGhost.scale.set(held.size[0], 1, held.size[2]);
+        this.yawGhost.rotation.y = -held.targetYaw;
+        this.yawGhost.material.color.setHex(release.yawOk ? COLOR.ok : COLOR.near);
+      }
       if (held.target) {
         const [tx, tz] = held.target;
         const elev = held.targetElev ?? 0;

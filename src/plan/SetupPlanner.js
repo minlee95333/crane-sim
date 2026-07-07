@@ -11,6 +11,7 @@
 import { LoadChart } from '../core/LoadChart.js';
 import { LoadChart2D } from '../core/LoadChart2D.js';
 import { checkStability } from '../core/Stability.js';
+import { evaluateAssembly, evaluateOutriggers, heightLimitAt, powerLineClearance } from '../core/SiteRules.js';
 
 /** [x,z] 정규화 ([x,y,z]도 허용) */
 const xz = (p) => (p.length === 3 ? [p[0], p[2]] : [p[0], p[1]]);
@@ -57,6 +58,16 @@ export function evaluateSetup(spec, setup, lifts, site = {}) {
   let minCapMargin = Infinity;
   let minTipMargin = Infinity;
   let maxGroundPressure = 0;
+  const assembly = evaluateAssembly(
+    spec,
+    setup.currentConfig ?? null,
+    spec.configurations?.find((c) => c.id === setup.configId) ?? null,
+    site.logistics ?? {},
+  );
+  if (!assembly.feasible) {
+    return { feasible: false, boomLength, lifts: [], minCapMargin: 0, minTipMargin: 0,
+      maxGroundPressure: 0, assembly, reason: assembly.reason };
+  }
 
   for (const lift of lifts) {
     const rLoad = dist2d(setup.pos, xz(lift.pos));
@@ -114,6 +125,33 @@ export function evaluateSetup(spec, setup, lifts, site = {}) {
         }
       }
     }
+    if (feasible) {
+      const points = [
+        [lift.pos[0], pickupHeight(lift), lift.pos.length === 3 ? lift.pos[2] : lift.pos[1]],
+        [lift.target[0], targetHeight(lift), lift.target.length === 3 ? lift.target[2] : lift.target[1]],
+      ];
+      const power = points.map((point) => powerLineClearance(point, site.powerLines ?? []))
+        .find((item) => !item.safe);
+      const height = points.map((point) => heightLimitAt(point, site.heightLimits ?? []))
+        .find((item) => !item.safe);
+      if (power) {
+        feasible = false;
+        reason = `전력선 이격 부족: ${power.clearance.toFixed(1)}m < ${power.required}m`;
+      } else if (height) {
+        feasible = false;
+        reason = `고도 제한 초과: 최대 ${height.limit}m`;
+      }
+    }
+    if (feasible) {
+      const individual = evaluateOutriggers(spec, {
+        pos: setup.pos, loadMass: lift.mass, radius: rWorst,
+        defaultBearingCapacity: ground?.bearingCapacity,
+      }, site.groundZones ?? []);
+      if (!individual.feasible) {
+        feasible = false;
+        reason = '개별 아웃리거 지지력 부족';
+      }
+    }
     results.push({ id: lift.id, feasible, reason, rLoad, rTarget, requiredBoomLength });
   }
 
@@ -124,6 +162,7 @@ export function evaluateSetup(spec, setup, lifts, site = {}) {
     minCapMargin: Number.isFinite(minCapMargin) ? minCapMargin : 0,
     minTipMargin,
     maxGroundPressure,
+    assembly,
   };
 }
 

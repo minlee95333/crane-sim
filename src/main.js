@@ -21,6 +21,17 @@ import { generateValidatedMacroPlan } from './plan/PlanRepair.js';
 import { evaluateManualPlan } from './plan/ManualPlanner.js';
 import { validateSchedule3D } from './plan/ScheduleValidator.js';
 import { SCENARIOS } from '../data/scenarios.js';
+import {
+  addDescriptorObject, buildScenario, descriptorFromScenario, emptyDescriptor,
+  parseDescriptor, removeDescriptorObject, updateDescriptorEnvironment, updateDescriptorObject,
+} from './editor/scenario.js';
+import {
+  applyVisualEdit, stageVisualEdit, VisualScenarioEditor,
+} from './editor/VisualScenarioEditor.js';
+import { validateScenarioQuick } from './editor/QuickScenarioValidator.js';
+import { QuickValidationView } from './editor/QuickValidationView.js';
+import { DescriptorHistory } from './editor/DescriptorHistory.js';
+import { calibrationReport } from './plan/Calibration.js';
 
 const container = document.getElementById('app');
 const hud = document.getElementById('hud');
@@ -34,6 +45,9 @@ const sound = new SoundView();
 // 플레이 보조 오버레이 (P7.11): 씬 앵커 마커 + 화면 위젯 — H 토글
 const overlayView = new OverlayView();
 sceneManager.scene.add(overlayView.root);
+const quickValidationView = new QuickValidationView();
+quickValidationView.root.visible = false;
+sceneManager.scene.add(quickValidationView.root);
 const widgets = new ScreenWidgets(document.getElementById('overlay'));
 let assistOn = true;
 let hudOn = true; // 좌상단 정보창 (I 토글)
@@ -57,17 +71,34 @@ let paused = false;
 let macroPlan = null;
 let planPlayer = null;
 let pendingSetupIndex = null;
+let scoreShown = false;
+let customScenarioIndex = -1;
+let visualEditOn = false;
+let visualDescriptor = null;
+let pausedBeforeVisual = false;
+let visualEditor = null;
+let visualDirty = false;
+const visualStagedEdits = new Map();
+const editorHistory = new DescriptorHistory(50);
 
 // --- 리플레이 상태 ---
 let lastRecording = null;
 let playback = null; // { frames, i } — 재생 중이면 non-null
 
 const dashboard = new Dashboard(dashboardRoot, SCENARIOS, {
-  scenario: (index) => loadScenario(index),
+  scenario: (index) => {
+    if (visualEditOn) toggleVisualEdit();
+    loadScenario(index);
+    resetEditorHistory();
+  },
   crane: (index) => { activeCrane = index; },
   speed: (speed) => sim.setTimeScale(speed),
   pause: () => { paused = !paused; },
-  reset: () => loadScenario(scenarioIdx),
+  reset: () => {
+    if (visualEditOn) toggleVisualEdit();
+    loadScenario(scenarioIdx);
+    resetEditorHistory();
+  },
   attach: () => {
     if (!playback && !paused) sim.toggleAttach(activeCrane);
   },
@@ -109,6 +140,57 @@ const dashboard = new Dashboard(dashboardRoot, SCENARIOS, {
       dashboard.showPlanError(error.message);
     }
   },
+  scenarioTemplate: () => {
+    dashboard.setScenarioJSON(emptyDescriptor());
+    dashboard.showScenarioValidation([]);
+  },
+  scenarioApply: () => {
+    const parsed = parseDescriptor(dashboard.getScenarioJSON());
+    if (!parsed.valid) {
+      dashboard.showScenarioValidation(parsed.errors);
+      return;
+    }
+    commitEditorHistory(parsed.descriptor);
+    applyCustomDescriptor(parsed.descriptor);
+  },
+  scenarioSave: () => {
+    const parsed = parseDescriptor(dashboard.getScenarioJSON());
+    if (!parsed.valid) return dashboard.showScenarioValidation(parsed.errors);
+    downloadJSON(parsed.descriptor, `scenario-${Date.now()}.json`);
+  },
+  scenarioLoad: () => dashboard.openScenarioFile(),
+  visualEdit: () => toggleVisualEdit(),
+  editorUndo: () => restoreEditorHistory(editorHistory.undo()),
+  editorRedo: () => restoreEditorHistory(editorHistory.redo()),
+  objectAdd: () => {
+    const descriptor = editableDescriptor();
+    const item = addDescriptorObject(descriptor, dashboard.getObjectKind());
+    applyEditedDescriptor(descriptor, { kind: dashboard.getObjectKind(), id: item.id });
+  },
+  objectUpdate: () => {
+    const selected = dashboard.getSelectedObject();
+    if (!selected) return;
+    const descriptor = editableDescriptor();
+    updateDescriptorObject(descriptor, selected.kind, selected.id, dashboard.getObjectValues());
+    applyEditedDescriptor(descriptor, selected);
+  },
+  objectDelete: () => {
+    const selected = dashboard.getSelectedObject();
+    if (!selected) return;
+    const descriptor = editableDescriptor();
+    removeDescriptorObject(descriptor, selected.kind, selected.id);
+    applyEditedDescriptor(descriptor);
+  },
+  environmentUpdate: () => {
+    const descriptor = editableDescriptor();
+    updateDescriptorEnvironment(descriptor, dashboard.getEnvironmentValues());
+    applyEditedDescriptor(descriptor);
+  },
+  calibrate: () => {
+    const scenario = SCENARIOS[scenarioIdx].scenario;
+    const cases = (scenario.loads ?? []).slice(0, 3).map((load) => ({ craneId: 0, loadId: load.id }));
+    dashboard.showCalibration(calibrationReport(scenario, cases));
+  },
   requestSetupPick: (index) => {
     pendingSetupIndex = index;
   },
@@ -129,10 +211,39 @@ const dashboard = new Dashboard(dashboardRoot, SCENARIOS, {
   },
 });
 
+visualEditor = new VisualScenarioEditor({
+  camera: sceneManager.camera,
+  domElement: sceneManager.renderer.domElement,
+  scene: sceneManager.scene,
+  controls: sceneManager.controls,
+  getObjects: () => [
+    ...craneViews.map((view) => view.root),
+    ...(loadView ? [...loadView.meshes.values()] : []),
+    ...(siteView ? [
+      ...[...siteView.targets.values()].flatMap((target) => [target.fill, target.ring]),
+      ...siteView.obstacles.values(),
+      ...[...siteView.noFlyZones.values()].flatMap((zone) => [zone.fill, zone.border]),
+    ] : []),
+  ],
+  onPreview: (edit) => previewVisualEdit(edit),
+  onSelect: (selection) => dashboard.selectScenarioObject(selection),
+  onCommit: (edit) => {
+    applyVisualEdit(visualDescriptor, edit);
+    stageVisualEdit(visualStagedEdits, edit);
+    commitEditorHistory(visualDescriptor);
+    dashboard.setScenarioJSON(visualDescriptor);
+    visualDirty = true;
+    dashboard.showScenarioPending();
+    updateQuickValidation();
+  },
+});
+
 sceneManager.onGroundDoubleClick((pos) => {
   if (pendingSetupIndex == null) return;
   const index = pendingSetupIndex;
   pendingSetupIndex = null;
+  scoreShown = false;
+  widgets.hideScore();
   dashboard.applySetupPoint(index, pos);
 });
 
@@ -140,10 +251,132 @@ function craneViewFor(spec) {
   return spec.type === 'tower' ? new TowerCraneView(spec) : new MobileCraneView(spec);
 }
 
+function editableDescriptor() {
+  return visualDescriptor
+    ? structuredClone(visualDescriptor)
+    : descriptorFromScenario(SCENARIOS[scenarioIdx].scenario, SCENARIOS[scenarioIdx].name);
+}
+
+function applyEditedDescriptor(descriptor, selected = null) {
+  commitEditorHistory(descriptor);
+  dashboard.setScenarioJSON(descriptor);
+  applyCustomDescriptor(descriptor);
+  dashboard.setEditorDescriptor(visualDescriptor, selected);
+}
+
+function syncEditorHistory() {
+  dashboard.setEditorHistory(editorHistory.canUndo, editorHistory.canRedo);
+}
+
+function resetEditorHistory() {
+  editorHistory.reset(visualDescriptor);
+  syncEditorHistory();
+}
+
+function commitEditorHistory(descriptor) {
+  editorHistory.commit(descriptor);
+  syncEditorHistory();
+}
+
+function restoreEditorHistory(descriptor) {
+  if (!descriptor) return syncEditorHistory();
+  dashboard.setScenarioJSON(descriptor);
+  applyCustomDescriptor(descriptor);
+  dashboard.setEditorDescriptor(visualDescriptor);
+  syncEditorHistory();
+}
+
+function applyCustomDescriptor(descriptor) {
+  visualDescriptor = structuredClone(descriptor);
+  const entry = {
+    id: 'custom',
+    name: descriptor.name ?? '사용자 시나리오',
+    desc: '시나리오 편집기에서 생성',
+    scenario: buildScenario(descriptor),
+  };
+  if (customScenarioIndex < 0) {
+    SCENARIOS.push(entry);
+    customScenarioIndex = SCENARIOS.length - 1;
+    dashboard.addScenario(entry, customScenarioIndex);
+  } else {
+    SCENARIOS[customScenarioIndex] = entry;
+    dashboard.renameScenario(customScenarioIndex, entry.name);
+  }
+  dashboard.showScenarioValidation([]);
+  visualDirty = false;
+  visualStagedEdits.clear();
+  loadScenario(customScenarioIndex);
+}
+
+function toggleVisualEdit() {
+  visualEditOn = !visualEditOn;
+  if (visualEditOn) {
+    const entry = SCENARIOS[scenarioIdx];
+    visualDescriptor = descriptorFromScenario(entry.scenario, entry.name);
+    dashboard.setScenarioJSON(visualDescriptor);
+    dashboard.setEditorDescriptor(visualDescriptor);
+    pausedBeforeVisual = paused;
+    paused = true;
+    planPlayer = null;
+    playback = null;
+    visualDirty = false;
+    visualStagedEdits.clear();
+  } else {
+    visualEditor.setEnabled(false);
+    if (visualDirty) applyCustomDescriptor(visualDescriptor);
+    paused = pausedBeforeVisual;
+  }
+  if (visualEditOn) visualEditor.setEnabled(true);
+  quickValidationView.root.visible = visualEditOn;
+  dashboard.setVisualEdit(visualEditOn);
+}
+
+function previewVisualEdit(edit) {
+  const [x, z] = edit.pos;
+  if (edit.kind === 'crane') {
+    const index = visualDescriptor.cranes.findIndex((item) => item.id === edit.id);
+    if (index >= 0) craneViews[index].root.position.set(x, 0, z);
+  } else if (edit.kind === 'load') {
+    const mesh = loadView.meshes.get(edit.id);
+    if (mesh) mesh.position.set(x, mesh.position.y, z);
+  } else if (edit.kind === 'target') {
+    const target = siteView.targets.get(edit.id);
+    target?.fill.position.set(x, target.fill.position.y, z);
+    target?.ring.position.set(x, target.ring.position.y, z);
+  } else if (edit.kind === 'obstacle') {
+    const obstacle = siteView.obstacles.get(edit.id);
+    obstacle?.position.set(x, obstacle.position.y, z);
+  } else if (edit.kind === 'noFlyZone') {
+    const zone = siteView.noFlyZones.get(edit.id);
+    zone?.fill.position.set(x, zone.fill.position.y, z);
+    zone?.border.position.set(x, 0, z);
+  }
+}
+
+function visualObject(kind, id) {
+  if (kind === 'crane') {
+    const index = visualDescriptor.cranes.findIndex((item) => item.id === id);
+    return craneViews[index]?.root ?? null;
+  }
+  if (kind === 'load') return loadView?.meshes.get(id) ?? null;
+  if (kind === 'target') return siteView?.targets.get(id)?.fill ?? null;
+  if (kind === 'obstacle') return siteView?.obstacles.get(id) ?? null;
+  if (kind === 'noFlyZone') return siteView?.noFlyZones.get(id)?.fill ?? null;
+  return null;
+}
+
+function updateQuickValidation() {
+  if (!visualDescriptor || !loadView || !siteView) return;
+  const issues = validateScenarioQuick(visualDescriptor);
+  quickValidationView.update(issues, visualObject);
+  dashboard.showQuickValidation(issues);
+}
+
 /** 시나리오 로드: sim·뷰 전부 재구성 */
 function loadScenario(idx) {
   scenarioIdx = ((idx % SCENARIOS.length) + SCENARIOS.length) % SCENARIOS.length;
   const entry = SCENARIOS[scenarioIdx];
+  if (!visualEditOn) visualDescriptor = descriptorFromScenario(entry.scenario, entry.name);
 
   // 기존 뷰 제거
   for (const v of craneViews) sceneManager.scene.remove(v.root);
@@ -165,6 +398,7 @@ function loadScenario(idx) {
   const state = sim.getState();
   craneViews = entry.scenario.cranes.map((spec) => {
     const view = craneViewFor(spec);
+    view.root.userData.visualEdit = { kind: 'crane', id: spec.id };
     sceneManager.scene.add(view.root);
     return view;
   });
@@ -189,22 +423,45 @@ function loadScenario(idx) {
   dashboard.setScenario(scenarioIdx);
   dashboard.setCranes(entry.scenario.cranes, activeCrane);
   dashboard.setPlanResult(null);
+  dashboard.setEditorDescriptor(visualDescriptor);
   widgets.showOnboarding(entry); // 시나리오 목표·조작 요약 카드 (6초)
+  if (visualEditOn) paused = true;
+  updateQuickValidation();
 }
 
 loadScenario(scenarioIdx);
+dashboard.setScenarioJSON(visualDescriptor);
+resetEditorHistory();
 
 // --- 키 입력 (배속·시나리오·크레인 전환·기록/리플레이) ---
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Tab') e.preventDefault();
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && e.code === 'KeyZ') {
+    e.preventDefault();
+    restoreEditorHistory(e.shiftKey ? editorHistory.redo() : editorHistory.undo());
+    return;
+  }
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && e.code === 'KeyY') {
+    e.preventDefault();
+    restoreEditorHistory(editorHistory.redo());
+    return;
+  }
 
   if (e.code === 'Digit1') sim.setTimeScale(1);
   if (e.code === 'Digit2') sim.setTimeScale(5);
   if (e.code === 'Digit3') sim.setTimeScale(10);
   if (e.code === 'Digit4') sim.setTimeScale(20);
 
-  if (e.code === 'KeyN') loadScenario(scenarioIdx + (e.shiftKey ? -1 : 1));
-  if (e.code === 'KeyO') loadScenario(scenarioIdx); // 현재 시나리오 리셋
+  if (e.code === 'KeyN') {
+    if (visualEditOn) toggleVisualEdit();
+    loadScenario(scenarioIdx + (e.shiftKey ? -1 : 1));
+    resetEditorHistory();
+  }
+  if (e.code === 'KeyO') {
+    if (visualEditOn) toggleVisualEdit();
+    loadScenario(scenarioIdx);
+    resetEditorHistory();
+  }
   if (e.code === 'KeyG') sceneManager.toggleGrid(); // 개발용 그리드·축
   if (e.code === 'KeyC') {
     cameraRig.cycle();
@@ -241,7 +498,7 @@ window.addEventListener('keydown', (e) => {
 function toggleRecording() {
   if (playback) return;
   if (recorder.active) {
-    const data = recorder.stop();
+    const data = recorder.stop(sim.completionScore());
     downloadJSON(data, `episode-${data.scenarioId}-${Date.now()}.json`);
     lastRecording = data;
   } else {
@@ -289,7 +546,7 @@ function loop(now) {
 
   const nCranes = sim.getState().cranes.length;
   let state;
-  let command = { slew: 0, luff: 0, hoist: 0 };
+  let command = { slew: 0, luff: 0, hoist: 0, tag: 0 };
 
   if (planPlayer) {
     planPlayer.update(frameDt);
@@ -323,9 +580,10 @@ function loop(now) {
       hoist: clamp1(keyCommand.hoist + panelCommand.hoist),
       drive: clamp1((keyCommand.drive ?? 0) + (panelCommand.drive ?? 0)),
       steer: clamp1((keyCommand.steer ?? 0) + (panelCommand.steer ?? 0)),
+      tag: clamp1((keyCommand.tag ?? 0) + (panelCommand.tag ?? 0)),
     };
     const commands = Array.from({ length: nCranes }, (_, i) =>
-      i === activeCrane ? command : { slew: 0, luff: 0, hoist: 0 },
+      i === activeCrane ? command : { slew: 0, luff: 0, hoist: 0, tag: 0 },
     );
     recorder.frame(frameDt, sim.timeScale, commands, attachId);
     state = sim.step(frameDt, commands);
@@ -338,6 +596,8 @@ function loop(now) {
   loadView.update(state.loads, state.trucks, state.cranes, state.time);
   agentView.update(state.agents ?? [], state.time);
   effects.update(state); // 안착·주행 먼지 (상태 전이·시뮬 시간 결정론)
+  for (const edit of visualStagedEdits.values()) previewVisualEdit(edit);
+  visualEditor?.refreshPreview();
   cameraRig.update(state.cranes[activeCrane]);
   const liveNow = !playback && !planPlayer && !paused;
   sound.update(state, { live: liveNow, activeCrane });
@@ -381,6 +641,13 @@ function loop(now) {
     guidance: guidanceP,
     planNote,
   });
+  if (!planPlayer && !scoreShown) {
+    const score = sim.completionScore();
+    if (score) {
+      scoreShown = true;
+      widgets.showScore(score);
+    }
+  }
 
   sceneManager.render();
   drawHUD(state, command);
@@ -470,7 +737,7 @@ function drawHUD(state, command) {
     `${entry.desc}`,
     ``,
     craneLabel,
-    `입력     : slew=${command.slew} luff=${command.luff} hoist=${command.hoist}${c.type !== 'tower' ? ` drive=${command.drive ?? 0} steer=${command.steer ?? 0}` : ''}`,
+    `입력     : slew=${command.slew} luff=${command.luff} hoist=${command.hoist} tag=${command.tag ?? 0}${c.type !== 'tower' ? ` drive=${command.drive ?? 0} steer=${command.steer ?? 0}` : ''}`,
     c.type !== 'tower'
       ? `주행     : ${(c.extra.driveVel ?? 0).toFixed(2)} m/s · 헤딩 ${rad2deg(c.extra.driveYaw ?? 0).toFixed(0)}° · 위치 (${c.basePos[0].toFixed(1)}, ${c.basePos[2].toFixed(1)})`
       : `위치     : 고정식 (마스트)`,
@@ -486,7 +753,7 @@ function drawHUD(state, command) {
     `이벤트   : ${state.lastEvent ?? '-'}`,
     `${recLine}`,
     ``,
-    `[주행] W/S 전·후진  A/D 좌·우회전    [팔] ←/→ 선회  ↑/↓ 기복  Q/E 권상·권하  Space 픽업`,
+    `[주행] W/S 전·후진  A/D 좌·우회전    [팔] ←/→ 선회  ↑/↓ 기복  Q/E 권상·권하  Z/X 태그라인  Space 픽업`,
     `N 다음 시나리오  O 리셋  Tab 크레인 전환  1~4 배속  C 카메라  M 소리  H 보조UI  I 정보창  G 그리드  R 기록  P 리플레이`,
     `마우스: 회전 | 휠: 줌 | 우클릭: 이동`,
   ].join('\n');

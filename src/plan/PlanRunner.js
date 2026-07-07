@@ -596,6 +596,25 @@ export class PlanRunner {
     const state = this.sim.getState();
     const nextWaiting = new Array(n).fill(false);
     const waitCause = new Array(n).fill(null);
+    // 공유 인력/작업반: 작은 craneId부터 가용 수량을 점유한다.
+    const pools = new Map((this.sim.scenario.resources ?? []).map((r) => [r.type, r.count ?? 1]));
+    const used = new Map();
+    for (let ci = 0; ci < n; ci++) {
+      const load = this.sim.world.loads.find((l) => l.id === this.active[ci]?.loadId);
+      const resourcePhase = load &&
+        (load.state === 'rigging' || load.state === 'derigging' ||
+          this.active[ci]?.phase === 'attach' || this.active[ci]?.phase === 'release');
+      if (!resourcePhase) continue;
+      for (const [type, count] of Object.entries(load?.resourceRequirements ?? {})) {
+        const next = (used.get(type) ?? 0) + count;
+        if (next > (pools.get(type) ?? 0)) {
+          nextWaiting[ci] = true;
+          waitCause[ci] = `resource:${type}`;
+        } else {
+          used.set(type, next);
+        }
+      }
+    }
     this._evade = new Array(n).fill(false);
     this._evadeFrom = new Array(n).fill(-1);
     this._evadeTail = new Array(n).fill(false);

@@ -72,6 +72,22 @@ export class SchedulePlayer {
     const activeCranes = new Set();
 
     for (const assignment of this.result.assignments) {
+      if (assignment.tandem) {
+        for (const plan of assignment.cranePlans) {
+          const ci = craneIndex.get(plan.craneId);
+          const crane = state.cranes[ci];
+          let pos = plan.fromPos;
+          if (time >= plan.travelFinish) pos = plan.setupPos;
+          else if (time >= plan.travelStart && plan.travelFinish > plan.travelStart) {
+            pos = pathPosition(plan.movePath, (time - plan.travelStart) / (plan.travelFinish - plan.travelStart));
+          } else continue;
+          const dx = pos[0] - crane.basePos[0];
+          const dz = pos[1] - crane.basePos[2];
+          crane.basePos = [pos[0], crane.basePos[1], pos[1]];
+          crane.hookPos = [crane.hookPos[0] + dx, crane.hookPos[1], crane.hookPos[2] + dz];
+        }
+        continue;
+      }
       const ci = craneIndex.get(assignment.craneId);
       if (ci == null) continue;
       const crane = state.cranes[ci];
@@ -103,6 +119,29 @@ export class SchedulePlayer {
       if (!target2) continue;
       const to = target2.length === 3 ? target2 : [target2[0], from[1], target2[1]];
       const hookOffset = (load.size?.[1] ?? 1) / 2 + HOOK_CLEARANCE;
+      if (assignment.tandem) {
+        const t = clamp01((time - assignment.liftStart) / assignment.liftDuration);
+        if (time >= assignment.liftFinish) {
+          load.pos = [...to];
+          load.state = 'placed';
+        } else if (time >= assignment.liftStart) {
+          const safeY = Math.max(from[1], to[1]) + 12;
+          const u = t < 0.3 ? 0 : t < 0.7 ? (t - 0.3) / 0.4 : 1;
+          const y = t < 0.3 ? lerp(from[1], safeY, t / 0.3) :
+            t < 0.7 ? safeY : lerp(safeY, to[1], (t - 0.7) / 0.3);
+          load.pos = [lerp(from[0], to[0], u), y, lerp(from[2], to[2], u)];
+          load.state = 'hooked';
+          const points = assignment.liftPoints ?? [[-4, 0], [4, 0]];
+          assignment.cranePlans.forEach((plan, i) => {
+            const crane = state.cranes[craneIndex.get(plan.craneId)];
+            activeCranes.add(plan.craneId);
+            this.#aimCraneAtPoint(crane, { ...assignment, craneId: plan.craneId, boomLength: plan.boomLength }, [
+              load.pos[0] + points[i][0], load.pos[1] + hookOffset, load.pos[2] + (points[i][1] ?? 0),
+            ]);
+          });
+        }
+        continue;
+      }
       const pickupHook = [from[0], from[1] + hookOffset, from[2]];
       const targetHook = [to[0], to[1] + hookOffset, to[2]];
       if (time >= assignment.liftFinish) {

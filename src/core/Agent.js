@@ -30,9 +30,15 @@ export class Agent {
       this.route = def.route.map((p) => [...p]);
       this.speed = def.speed ?? 2.2;
       this.size = def.size ? [...def.size] : [2.2, 2.2, 4.5]; // [폭, 높이, 길이(진행축)]
-      const start = def.startIndex ?? 0;
-      this.pos = [...this.route[start % this.route.length]];
-      this.wpIndex = (start + 1) % this.route.length;
+      if (def.startFraction != null) {
+        const start = routePointAt(this.route, def.startFraction);
+        this.pos = start.pos;
+        this.wpIndex = start.wpIndex;
+      } else {
+        const start = def.startIndex ?? 0;
+        this.pos = [...this.route[start % this.route.length]];
+        this.wpIndex = (start + 1) % this.route.length;
+      }
     } else {
       this.area = { min: [...def.area.min], max: [...def.area.max] };
       const [spMin, spMax] = def.speed ?? [0.8, 1.4];
@@ -216,6 +222,7 @@ export function buildAgents(scenario) {
             speed: v.speed,
             size: v.size,
             startIndex: i * Math.max(1, Math.floor(v.route.length / count)),
+            startFraction: i / count,
           },
           baseSeed + (n += 1) * 104729,
         ),
@@ -223,6 +230,31 @@ export function buildAgents(scenario) {
     }
   }
   return { agents, rules: { dangerRadius: def.dangerRadius ?? 5 } };
+}
+
+/** 닫힌 순환 경로의 전체 길이 비율에 해당하는 점과 다음 웨이포인트. */
+function routePointAt(route, fraction) {
+  const lengths = route.map((point, i) => {
+    const next = route[(i + 1) % route.length];
+    return Math.hypot(next[0] - point[0], next[1] - point[1]);
+  });
+  const total = lengths.reduce((sum, length) => sum + length, 0);
+  let distance = ((fraction % 1) + 1) % 1 * total;
+  for (let i = 0; i < route.length; i++) {
+    if (distance <= lengths[i] || i === route.length - 1) {
+      const nextIndex = (i + 1) % route.length;
+      const t = lengths[i] > 0 ? distance / lengths[i] : 0;
+      return {
+        pos: [
+          route[i][0] + (route[nextIndex][0] - route[i][0]) * t,
+          route[i][1] + (route[nextIndex][1] - route[i][1]) * t,
+        ],
+        wpIndex: nextIndex,
+      };
+    }
+    distance -= lengths[i];
+  }
+  return { pos: [...route[0]], wpIndex: 1 % route.length };
 }
 
 function siteFallbackArea(site) {

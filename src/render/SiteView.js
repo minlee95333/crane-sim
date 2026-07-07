@@ -40,6 +40,8 @@ export class SiteView {
   constructor(state, scenario = {}) {
     this.root = new THREE.Group();
     this.targets = new Map(); // loadId → { fill, ring }
+    this.obstacles = new Map();
+    this.noFlyZones = new Map();
     this.trucks = [];
     this.#addLogisticsSite(scenario);
 
@@ -49,6 +51,7 @@ export class SiteView {
       const [tx, tz] = l.target;
 
       const fill = new THREE.Mesh(new THREE.CircleGeometry(PLACE_TOL_VIS, 40), MAT.targetFill);
+      fill.userData.visualEdit = { kind: 'target', id: l.id };
       fill.rotation.x = -Math.PI / 2;
       fill.position.set(tx, 0.03, tz);
       this.root.add(fill);
@@ -57,6 +60,7 @@ export class SiteView {
         new THREE.RingGeometry(PLACE_TOL_VIS - 0.12, PLACE_TOL_VIS, 48),
         MAT.targetRing,
       );
+      ring.userData.visualEdit = { kind: 'target', id: l.id };
       ring.rotation.x = -Math.PI / 2;
       ring.position.set(tx, 0.04, tz);
       this.root.add(ring);
@@ -66,7 +70,10 @@ export class SiteView {
 
     // --- 장애물: kind 데이터 주도 외형 (office/structure/미지정=회색 박스) ---
     for (const ob of state.obstacles ?? []) {
-      this.root.add(this.#buildObstacle(ob, scenario));
+      const view = this.#buildObstacle(ob, scenario);
+      view.userData.visualEdit = { kind: 'obstacle', id: ob.id };
+      this.obstacles.set(ob.id, view);
+      this.root.add(view);
     }
 
     // --- 인양 금지구역: 바닥 붉은 영역 + 테두리 ---
@@ -79,18 +86,54 @@ export class SiteView {
       const fill = new THREE.Mesh(new THREE.PlaneGeometry(w, d), MAT.nfzFill);
       fill.rotation.x = -Math.PI / 2;
       fill.position.set(cx, 0.02, cz);
+      fill.userData.visualEdit = { kind: 'noFlyZone', id: z.id };
       this.root.add(fill);
 
       const border = new THREE.LineLoop(
         new THREE.BufferGeometry().setFromPoints([
-          new THREE.Vector3(z.min[0], 0.05, z.min[1]),
-          new THREE.Vector3(z.max[0], 0.05, z.min[1]),
-          new THREE.Vector3(z.max[0], 0.05, z.max[1]),
-          new THREE.Vector3(z.min[0], 0.05, z.max[1]),
+          new THREE.Vector3(-w / 2, 0.05, -d / 2),
+          new THREE.Vector3(w / 2, 0.05, -d / 2),
+          new THREE.Vector3(w / 2, 0.05, d / 2),
+          new THREE.Vector3(-w / 2, 0.05, d / 2),
         ]),
         MAT.nfzEdge,
       );
+      border.position.set(cx, 0, cz);
       this.root.add(border);
+      this.noFlyZones.set(z.id, { fill, border });
+    }
+
+    // 전력선: 선분 + 양 끝 전주 (three 도형만)
+    for (const line of scenario.powerLines ?? []) {
+      const geometry = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(...line.a), new THREE.Vector3(...line.b),
+      ]);
+      this.root.add(new THREE.Line(geometry, new THREE.LineBasicMaterial({ color: 0xf2c84b })));
+      for (const point of [line.a, line.b]) {
+        const pole = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.12, 0.18, Math.max(point[1], 1), 8),
+          new THREE.MeshStandardMaterial({ color: 0x605744 }),
+        );
+        pole.position.set(point[0], point[1] / 2, point[2]);
+        this.root.add(pole);
+      }
+    }
+
+    // 고도 제한: 제한 높이의 반투명 평면
+    for (const limit of scenario.heightLimits ?? []) {
+      const w = limit.max[0] - limit.min[0];
+      const d = limit.max[1] - limit.min[1];
+      const plane = new THREE.Mesh(
+        new THREE.PlaneGeometry(w, d),
+        new THREE.MeshBasicMaterial({
+          color: 0xe0a53a, transparent: true, opacity: 0.12,
+          side: THREE.DoubleSide, depthWrite: false,
+        }),
+      );
+      plane.rotation.x = -Math.PI / 2;
+      plane.position.set((limit.min[0] + limit.max[0]) / 2, limit.maxHeight,
+        (limit.min[1] + limit.max[1]) / 2);
+      this.root.add(plane);
     }
   }
 

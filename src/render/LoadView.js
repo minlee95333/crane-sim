@@ -184,12 +184,13 @@ export class LoadView {
       });
       mat.emissive = new THREE.Color(0x000000);
       const mesh = buildShape(l, mat);
+      mesh.userData.visualEdit = { kind: 'load', id: l.id };
       this.meshes.set(l.id, mesh);
       this.materials.set(l.id, mat);
       this.root.add(mesh);
 
       const slings = Array.from({ length: 4 }, () => {
-        const rope = ropeSegment(SLING_MAT, 0.022);
+        const rope = ropeSegment(SLING_MAT.clone(), 0.022);
         rope.visible = false;
         this.root.add(rope);
         return rope;
@@ -298,6 +299,7 @@ export class LoadView {
       return;
     }
     const crane = craneStates[l.hookedBy];
+    const slingColor = l.sling?.blocked ? 0xe04a34 : l.sling?.warning ? 0xe0a53a : 0x2c2f33;
     const topY = mesh.position.y + l.size[1] / 2;
     // 후크 좌표: 코어 상태 우선, 합성 상태(계획 재생)는 부재 상면 위 후크갭으로 폴백
     const hook = crane?.hookPos ?? [mesh.position.x, topY + HOOK_GAP, mesh.position.z];
@@ -319,6 +321,7 @@ export class LoadView {
       const wx = mesh.position.x + dx * cy - dz * sy;
       const wz = mesh.position.z + dx * sy + dz * cy;
       rope.visible = true;
+      rope.material.color.setHex(slingColor);
       stretchBetween(rope, hook, [wx, topY, wz]);
     });
   }

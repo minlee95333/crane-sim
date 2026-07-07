@@ -16,7 +16,9 @@ export class Load {
    *                       target?:[x,z], route?:[{target:[x,z], elev?}, ...],
    *                       rigTime?(s), derigTime?(s), arriveTime?(s),
    *                       dependsOn?: [loadId], maxWind?(m/s),
-   *                       shape?(렌더 형상 태그), windArea?(수풍면적 m²) }
+   *                       shape?(렌더 형상 태그), windArea?(수풍면적 m²),
+   *                       tandem?(boolean), liftPoints?([[x,z],[x,z]]), cog?([x,z]),
+   *                       targetYaw?(rad), slingHeight?(m), minSlingAngle?(rad), blockUnsafeSling? }
    */
   constructor(def) {
     this.id = def.id;
@@ -25,6 +27,22 @@ export class Load {
     this.mass = def.mass; // t
     this.shape = def.shape ?? null; // 렌더 형상 태그 (h-beam/pipe/rebar/tank/…) — 코어는 데이터만 운반
     this.windArea = def.windArea ?? null; // 수풍면적 (m², null = 크기에서 유도) (T2-⑦)
+    this.tandem = def.tandem === true;
+    const halfSpan = Math.max(this.size[0], this.size[2]) * 0.4;
+    this.liftPoints = def.liftPoints
+      ? def.liftPoints.map((p) => [...p])
+      : [[-halfSpan, 0], [halfSpan, 0]];
+    this.cog = def.cog ? [def.cog[0], def.cog[1] ?? def.cog[2] ?? 0] : [0, 0];
+    this.tandemCraneIds = null;
+    this.targetYaw = def.targetYaw ?? null;
+    this.yawTolerance = def.yawTolerance ?? Math.PI / 18;
+    this.slingHeight = def.slingHeight ?? null;
+    this.minSlingAngle = def.minSlingAngle ?? null;
+    this.blockUnsafeSling = def.blockUnsafeSling ?? false;
+    this.resourceRequirements = { ...(def.resourceRequirements ?? {}) };
+    this.erectionOrder = def.erectionOrder ?? null;
+    this.placementError = null;
+    this.placementYawError = null;
     this.pos = [...def.pos]; // 중심 좌표. y는 바닥고(elev) + h/2로 정규화
     this.elev = def.elev ?? 0; // 초기 바닥 높이 (트럭 적재함 등)
     this.pos[1] = this.elev + this.size[1] / 2;
@@ -100,6 +118,17 @@ export class Load {
       stages: this.route.length,
       state: this.state,
       hookedBy: this.hookedBy,
+      tandem: this.tandem,
+      liftPoints: this.liftPoints.map((p) => [...p]),
+      cog: [...this.cog],
+      tandemCraneIds: this.tandemCraneIds ? [...this.tandemCraneIds] : null,
+      targetYaw: this.targetYaw,
+      yawTolerance: this.yawTolerance,
+      placementError: this.placementError,
+      placementYawError: this.placementYawError,
+      sling: this.sling ? { ...this.sling } : null,
+      resourceRequirements: { ...this.resourceRequirements },
+      erectionOrder: this.erectionOrder,
       rigRemain: this.state === 'rigging' || this.state === 'derigging' ? this.timer : 0,
       rigTime: this.rigTime,
       derigTime: this.derigTime,

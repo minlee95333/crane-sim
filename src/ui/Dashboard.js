@@ -1,9 +1,13 @@
+const escapeHTML = (value) => String(value).replace(/[&<>"']/g, (char) => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+}[char]));
+
 export class Dashboard {
   constructor(root, scenarios, handlers) {
     this.root = root;
     this.scenarios = scenarios;
     this.handlers = handlers;
-    this.command = { slew: 0, luff: 0, hoist: 0, drive: 0, steer: 0 };
+    this.command = { slew: 0, luff: 0, hoist: 0, drive: 0, steer: 0, tag: 0 };
     this.render();
     this.bind();
   }
@@ -57,6 +61,8 @@ export class Dashboard {
           <button class="dash-btn" data-control="luff" data-value="1">↓ 붐 내림 (반경↑)</button>
           <button class="dash-btn" data-control="hoist" data-value="1">Q · 권상 ↑</button>
           <button class="dash-btn" data-control="hoist" data-value="-1">E · 권하 ↓</button>
+          <button class="dash-btn" data-control="tag" data-value="-1">Z · 태그라인 ↶</button>
+          <button class="dash-btn" data-control="tag" data-value="1">X · 태그라인 ↷</button>
         </div>
 
         <button class="dash-btn primary" data-action="attach" style="width:100%;margin-top:8px">Space · 픽업 / 해제</button>
@@ -95,8 +101,69 @@ export class Dashboard {
         </div>
         <input class="plan-seek" data-plan-seek type="range" min="0" max="1" value="0" step="1" disabled />
         <div class="plan-summary" data-plan-summary>계획을 생성하면 전체 시간축이 표시됩니다.</div>
+        <button class="dash-btn" data-action="calibrate" style="width:100%;margin-top:8px">근사↔물리 캘리브레이션</button>
+        <div class="calibration-summary" data-calibration-summary></div>
         <div class="gantt" data-gantt></div>
         <div class="plan-editor" data-plan-editor></div>
+      </section>
+
+      <section class="dash-section">
+        <span class="dash-label">시나리오 편집기 · 3D + JSON</span>
+        <button class="dash-btn" data-action="visualEdit" data-visual-edit style="width:100%;margin-bottom:8px">✥ 3D 배치 편집 시작</button>
+        <div class="dash-row" style="margin-bottom:8px">
+          <button class="dash-btn" data-action="editorUndo" data-editor-undo disabled>↶ 실행 취소</button>
+          <button class="dash-btn" data-action="editorRedo" data-editor-redo disabled>↷ 다시 실행</button>
+        </div>
+        <div class="scenario-edit-help" data-visual-help>시작 후 크레인·부재·목표·장애물·제한구역을 클릭해 지면에서 드래그합니다.</div>
+        <div class="dash-row">
+          <select class="dash-select" data-object-kind>
+            <option value="load">양중물</option><option value="obstacle">장애물</option>
+            <option value="noFlyZone">제한구역</option><option value="crane">크레인</option>
+          </select>
+          <button class="dash-btn" data-action="objectAdd">＋ 추가</button>
+        </div>
+        <select class="dash-select" data-object-select style="margin-top:8px"><option>객체 없음</option></select>
+        <div class="scenario-property-grid">
+          <label>X<input type="number" step="0.5" data-object-field="x"></label>
+          <label>Z<input type="number" step="0.5" data-object-field="z"></label>
+          <label>폭<input type="number" min="0.1" step="0.5" data-object-field="width"></label>
+          <label>높이<input type="number" min="0.1" step="0.5" data-object-field="height"></label>
+          <label>깊이<input type="number" min="0.1" step="0.5" data-object-field="depth"></label>
+          <label>중량(t)<input type="number" min="0.1" step="0.5" data-object-field="mass"></label>
+        </div>
+        <div class="dash-row" style="margin-top:8px">
+          <button class="dash-btn primary" data-action="objectUpdate">선택 객체 적용</button>
+          <button class="dash-btn warn" data-action="objectDelete">삭제</button>
+        </div>
+        <span class="dash-label" style="margin-top:10px">현장 환경</span>
+        <div class="scenario-property-grid">
+          <label>현장 폭<input type="number" min="10" data-env-field="width"></label>
+          <label>현장 깊이<input type="number" min="10" data-env-field="depth"></label>
+          <label>풍속(m/s)<input type="number" min="0" step="0.5" data-env-field="windSpeed"></label>
+          <label>풍향(°)<input type="number" step="5" data-env-field="windDirection"></label>
+          <label>작업한계풍속<input type="number" min="0.1" step="0.5" data-env-field="maxOperatingWind"></label>
+          <label>돌풍 진폭(%)<input type="number" min="0" step="5" data-env-field="gustPercent"></label>
+          <label>돌풍 주기(s)<input type="number" min="1" step="1" data-env-field="gustPeriod"></label>
+          <label>지지력(t/m²)<input type="number" min="0.1" step="0.5" data-env-field="bearingCapacity"></label>
+          <label>작업자 수<input type="number" min="0" step="1" data-env-field="workerCount"></label>
+          <label>보행속도(m/s)<input type="number" min="0.1" step="0.1" data-env-field="workerSpeed"></label>
+          <label>이동장비 수<input type="number" min="0" step="1" data-env-field="vehicleCount"></label>
+          <label>장비속도(m/s)<input type="number" min="0.1" step="0.1" data-env-field="vehicleSpeed"></label>
+          <label>위험반경(m)<input type="number" min="0.5" step="0.5" data-env-field="dangerRadius"></label>
+        </div>
+        <button class="dash-btn" data-action="environmentUpdate" style="width:100%;margin:8px 0">환경 적용</button>
+        <textarea class="scenario-json" data-scenario-json rows="12" spellcheck="false"></textarea>
+        <div class="dash-row" style="margin-top:8px">
+          <button class="dash-btn" data-action="scenarioTemplate">새 템플릿</button>
+          <button class="dash-btn primary" data-action="scenarioApply">검증·실행</button>
+        </div>
+        <div class="dash-row" style="margin-top:8px">
+          <button class="dash-btn" data-action="scenarioSave">JSON 저장</button>
+          <button class="dash-btn" data-action="scenarioLoad">JSON 불러오기</button>
+          <input data-scenario-file type="file" accept=".json,application/json" hidden />
+        </div>
+        <div class="scenario-validation" data-scenario-validation>템플릿을 만들거나 JSON을 불러오세요.</div>
+        <div class="quick-validation" data-quick-validation></div>
       </section>
 
       <section class="dash-section">
@@ -147,7 +214,7 @@ export class Dashboard {
     });
 
     const release = () => {
-      this.command = { slew: 0, luff: 0, hoist: 0, drive: 0, steer: 0 };
+      this.command = { slew: 0, luff: 0, hoist: 0, drive: 0, steer: 0, tag: 0 };
       this.root.querySelectorAll('[data-control]').forEach((b) => b.classList.remove('is-active'));
     };
     this.root.querySelectorAll('[data-control]').forEach((button) => {
@@ -164,6 +231,22 @@ export class Dashboard {
     });
     window.addEventListener('pointerup', release);
     window.addEventListener('blur', release);
+    this.root.querySelector('[data-scenario-file]').addEventListener('change', async (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      this.setScenarioJSON(await file.text());
+      this.handlers.scenarioApply?.();
+      event.target.value = '';
+    });
+    this.root.querySelector('[data-quick-validation]').addEventListener('click', (event) => {
+      const button = event.target.closest('[data-validation-object]');
+      if (!button) return;
+      const issue = this.quickValidationIssues?.[Number(button.dataset.validationObject)];
+      if (issue) this.selectScenarioObject(issue);
+    });
+    this.root.querySelector('[data-object-select]').addEventListener('change', () => {
+      this.#populateObjectFields();
+    });
     this.root.querySelector('[data-plan-editor]').addEventListener('click', (e) => {
       const pick = e.target.closest('[data-plan-pick]');
       if (pick) {
@@ -207,6 +290,156 @@ export class Dashboard {
 
   getCommand() {
     return { ...this.command };
+  }
+
+  getScenarioJSON() {
+    return this.root.querySelector('[data-scenario-json]').value;
+  }
+
+  setScenarioJSON(value) {
+    this.root.querySelector('[data-scenario-json]').value =
+      typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+  }
+
+  setEditorDescriptor(descriptor, selected = null) {
+    this.editorDescriptor = descriptor;
+    const select = this.root.querySelector('[data-object-select]');
+    const groups = [
+      ['crane', '크레인', descriptor.cranes],
+      ['load', '양중물', descriptor.loads],
+      ['obstacle', '장애물', descriptor.obstacles],
+      ['noFlyZone', '제한구역', descriptor.noFlyZones],
+    ];
+    select.innerHTML = groups.flatMap(([kind, label, items]) =>
+      items.map((item) => `<option value="${kind}:${item.id}">${label} · ${item.name ?? item.id}</option>`),
+    ).join('') || '<option value="">객체 없음</option>';
+    if (selected) select.value = `${selected.kind}:${selected.id}`;
+    const site = descriptor.site ?? {};
+    const values = {
+      width: site.width ?? 100, depth: site.depth ?? 80,
+      windSpeed: descriptor.wind?.speed ?? 0,
+      windDirection: ((descriptor.wind?.dir ?? 0) * 180) / Math.PI,
+      maxOperatingWind: descriptor.wind?.maxOperating ?? 15,
+      gustPercent: (descriptor.wind?.gust?.amp ?? 0) * 100,
+      gustPeriod: descriptor.wind?.gust?.period ?? 20,
+      bearingCapacity: descriptor.ground?.bearingCapacity ?? 20,
+      workerCount: (descriptor.agents?.workers ?? []).reduce((sum, worker) => sum + (worker.count ?? 1), 0),
+      workerSpeed: descriptor.agents?.workers?.[0]?.speed
+        ? (descriptor.agents.workers[0].speed[0] + descriptor.agents.workers[0].speed[1]) / 2 : 1.1,
+      vehicleCount: (descriptor.agents?.vehicles ?? []).reduce((sum, vehicle) => sum + (vehicle.count ?? 1), 0),
+      vehicleSpeed: descriptor.agents?.vehicles?.[0]?.speed ?? 2.2,
+      dangerRadius: descriptor.agents?.dangerRadius ?? 5,
+    };
+    for (const [key, value] of Object.entries(values)) {
+      this.root.querySelector(`[data-env-field="${key}"]`).value = value;
+    }
+    this.#populateObjectFields();
+  }
+
+  getObjectKind() {
+    return this.root.querySelector('[data-object-kind]').value;
+  }
+
+  getSelectedObject() {
+    const [kind, ...id] = this.root.querySelector('[data-object-select]').value.split(':');
+    return id.length ? { kind, id: id.join(':') } : null;
+  }
+
+  getObjectValues() {
+    return Object.fromEntries([...this.root.querySelectorAll('[data-object-field]')]
+      .map((input) => [input.dataset.objectField, Number(input.value)]));
+  }
+
+  getEnvironmentValues() {
+    return Object.fromEntries([...this.root.querySelectorAll('[data-env-field]')]
+      .map((input) => [input.dataset.envField, Number(input.value)]));
+  }
+
+  selectScenarioObject(selection) {
+    if (selection.kind === 'target') selection = { kind: 'load', id: selection.id };
+    const select = this.root.querySelector('[data-object-select]');
+    select.value = `${selection.kind}:${selection.id}`;
+    this.#populateObjectFields();
+  }
+
+  #populateObjectFields() {
+    const selected = this.getSelectedObject();
+    if (!selected || !this.editorDescriptor) return;
+    const collection = selected.kind === 'noFlyZone'
+      ? this.editorDescriptor.noFlyZones : this.editorDescriptor[`${selected.kind}s`];
+    const item = collection.find((candidate) => candidate.id === selected.id);
+    if (!item) return;
+    const zone = selected.kind === 'noFlyZone';
+    const position = zone
+      ? [(item.min[0] + item.max[0]) / 2, (item.min[1] + item.max[1]) / 2] : item.pos;
+    const size = zone
+      ? [item.max[0] - item.min[0], 0.1, item.max[1] - item.min[1]]
+      : item.size ?? [1, 1, 1];
+    const values = {
+      x: position[0], z: position[1], width: size[0], height: size[1],
+      depth: size[2], mass: item.mass ?? 1,
+    };
+    for (const [key, value] of Object.entries(values)) {
+      this.root.querySelector(`[data-object-field="${key}"]`).value = value;
+    }
+  }
+
+  showScenarioValidation(errors = []) {
+    const box = this.root.querySelector('[data-scenario-validation]');
+    box.textContent = errors.length ? errors.join(' · ') : '검증 통과 — 사용자 시나리오를 실행 중입니다.';
+    box.classList.toggle('validation-danger', errors.length > 0);
+  }
+
+  showScenarioPending() {
+    const box = this.root.querySelector('[data-scenario-validation]');
+    box.textContent = '배치 변경됨 — 편집 종료 또는 검증·실행 시 시뮬레이션에 적용됩니다.';
+    box.classList.remove('validation-danger');
+  }
+
+  showQuickValidation(issues = []) {
+    const box = this.root.querySelector('[data-quick-validation]');
+    this.quickValidationIssues = issues;
+    if (!issues.length) {
+      box.innerHTML = '<strong>빠른 사전검증 통과</strong><span>즉시 확인 가능한 위반이 없습니다.</span>';
+      box.classList.remove('has-errors');
+      return;
+    }
+    box.classList.add('has-errors');
+    box.innerHTML = `<strong>빠른 사전검증 ${issues.length}건</strong>` +
+      issues.slice(0, 8).map((item, index) =>
+        `<button type="button" data-validation-object="${index}">` +
+        `${escapeHTML(item.id)} · ${escapeHTML(item.message)}</button>`).join('') +
+      (issues.length > 8 ? `<span>외 ${issues.length - 8}건</span>` : '');
+  }
+
+  setVisualEdit(enabled) {
+    const button = this.root.querySelector('[data-visual-edit]');
+    button.textContent = enabled ? '✓ 3D 배치 편집 종료' : '✥ 3D 배치 편집 시작';
+    button.classList.toggle('is-selected', enabled);
+    this.root.querySelector('[data-visual-help]').textContent = enabled
+      ? '편집 중: 여러 객체를 연속 배치하고, 편집 종료 시 시뮬레이션을 한 번 갱신합니다.'
+      : '시작 후 크레인·부재·목표·장애물·제한구역을 클릭해 지면에서 드래그합니다.';
+  }
+
+  setEditorHistory(canUndo, canRedo) {
+    this.root.querySelector('[data-editor-undo]').disabled = !canUndo;
+    this.root.querySelector('[data-editor-redo]').disabled = !canRedo;
+  }
+
+  showCalibration(report) {
+    const box = this.root.querySelector('[data-calibration-summary]');
+    if (!report?.rows?.length) {
+      box.textContent = '비교 가능한 양중이 없습니다.';
+      return;
+    }
+    box.innerHTML = `<strong>보정계수 ${report.correctionFactor?.toFixed(3) ?? '-'}</strong> · ` +
+      `MAE ${report.mae?.toFixed(1) ?? '-'}s<br>` +
+      report.rows.map((row) => `${row.loadId}: ${row.estimate?.toFixed(1) ?? '-'} → ` +
+        `${row.simulate?.toFixed(1) ?? '-'}s`).join('<br>');
+  }
+
+  openScenarioFile() {
+    this.root.querySelector('[data-scenario-file]').click();
   }
 
   getPlanPolicy() {
@@ -316,6 +549,19 @@ export class Dashboard {
 
   setScenario(index) {
     this.root.querySelector('#scenario-select').value = String(index);
+  }
+
+  addScenario(entry, index) {
+    const select = this.root.querySelector('#scenario-select');
+    const option = document.createElement('option');
+    option.value = String(index);
+    option.textContent = entry.name;
+    select.appendChild(option);
+  }
+
+  renameScenario(index, name) {
+    const option = this.root.querySelector(`#scenario-select option[value="${index}"]`);
+    if (option) option.textContent = name;
   }
 
   setCranes(cranes, active) {
